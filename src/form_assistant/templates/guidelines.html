@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Lärdomar{% endblock %}
+{% block content %}
+<h1>Lärdomar</h1>
+<p class="muted">Lärdomarna läggs till i AI:ns instruktionsprompt vid varje tolkning och revidering. De kommer från återkopplingen:
+  instruktionerna som ges när ett formulär itereras. AI:n kan föreslå lärdomar ur den, men bara de som godkänns används.
+  Godkända formulär används dessutom som exempel i prompten.</p>
+<div class="row" style="margin-bottom:14px">
+  <form method="post" action="/lardomar/foresla" data-busy class="inline"><button type="submit" {{ '' if api_key else 'disabled' }}>Föreslå lärdomar ur återkopplingen</button>
+    <span class="spinner muted">Claude läser återkopplingen …</span></form>
+</div>
+<form method="post" action="/lardomar/ny" class="panel">
+  <h3>Lägg till en lärdom</h3>
+  <textarea name="text" placeholder="T.ex. ”Fält för telefonnummer ska ha typen string och semantic telefon, även om de står i samma ruta som e-post.”"></textarea>
+  <div style="margin-top:8px"><button type="submit" class="secondary">Lägg till</button></div>
+</form>
+{% if guidelines %}
+<table>
+  <tr><th>Lärdom</th><th>Status</th><th>Källa</th><th></th></tr>
+  {% for g in guidelines %}
+  <tr><td>{{ g.text }}</td>
+    <td><span class="badge {{ {'aktiv': 'ok', 'förslag': 'warn', 'avvisad': 'muted'}[g.status] }}">{{ g.status }}</span></td>
+    <td class="small muted">{{ g.source or '' }}{% if g.decided_by %} · {{ g.decided_by }}{% endif %}</td>
+    <td>{% if g.status != 'aktiv' %}<form method="post" action="/lardomar/{{ g.id }}/aktiv" class="inline"><button type="submit">Använd</button></form>{% endif %}
+      {% if g.status != 'avvisad' %}<form method="post" action="/lardomar/{{ g.id }}/avvisad" class="inline"><button type="submit" class="secondary">{{ 'Avvisa' if g.status == 'förslag' else 'Sluta använda' }}</button></form>{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+<h2>Senaste återkopplingen</h2>
+{% if feedback %}<ul>{% for f in feedback %}<li><span class="muted small">{{ f.title }}:</span> {{ f.instruction }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">Ingen återkoppling ännu.</p>{% endif %}
+{% endblock %}

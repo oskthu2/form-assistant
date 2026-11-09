@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Urvalsbibliotek{% endblock %}
+{% block content %}
+<h1>Urvalsbibliotek</h1>
+<p class="muted">Svarsalternativ från godkända formulär, sparade som ValueSet (med CodeSystem). Nya formulär jämförs med biblioteket:
+  AI:n får det i prompten, och varje flervalsfråga får förslag på befintliga urval med samma eller fler alternativ. Ett urval som
+  används i många formulär är ett tecken på ett etablerat urval.</p>
+{% if valuesets %}
+<table>
+  <tr><th>Urval</th><th>Alternativ</th><th>Används</th><th></th></tr>
+  {% for vs in valuesets %}
+  <tr><td><b>{{ vs.title }}</b><div class="mono muted">{{ vs.url }}</div></td>
+    <td class="small">{% for c in vs.concepts %}{{ c.display }}{{ ', ' if not loop.last }}{% endfor %}</td>
+    <td>{{ vs.uses }}</td>
+    <td>{% if vs.source_form %}<a href="/f/{{ vs.source_form }}" class="small">ursprung</a> · {% endif %}<a class="small" href="/urval/resurs?url={{ quote(vs.url) }}">FHIR</a></td></tr>
+  {% endfor %}
+</table>
+{% else %}<div class="panel muted">Biblioteket är tomt. Urval sparas när ett formulär godkänns.</div>{% endif %}
+{% endblock %}

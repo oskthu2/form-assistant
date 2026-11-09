@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Nytt formulär</h1>
+<div class="panel">
+  <form method="post" action="/ladda-upp" enctype="multipart/form-data" data-busy>
+    <p>Ladda upp en eller några bilder av ett pappersformulär (en per sida), eller en PDF. Tjänsten känner först efter om
+      formuläret redan finns och erbjuder i så fall en kopia. Annars tolkar Claude det till en FHIR Questionnaire.</p>
+    <p><input type="file" name="files" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"></p>
+    <p><label class="small muted" for="hint">Beskrivning (valfritt) – hjälper tolkningen och sökningen</label>
+      <textarea id="hint" name="hint" placeholder="T.ex. Hälsodeklaration inför vaccination, fylls i av patienten"></textarea></p>
+    <div class="row">
+      <button type="submit" name="action" value="skapa">Skapa formulär</button>
+      <button type="submit" name="action" value="sok" class="secondary">Finns formuläret redan?</button>
+      <span class="spinner muted">Claude tolkar formuläret – det kan ta en halv minut …</span>
+    </div>
+  </form>
+</div>
+
+<h2>Formulär</h2>
+<p class="small muted">{{ forms|length }} formulär, varav {{ counts['godkänd'] }} godkända · {{ counts['urval'] }} urval i biblioteket ·
+  {{ counts['lärdomar'] }} aktiva lärdomar i instruktionsprompten</p>
+{% if forms %}
+<table>
+  <tr><th>Formulär</th><th>Status</th><th>Ändrat</th><th>Av</th></tr>
+  {% for f in forms %}
+  <tr><td><a href="/f/{{ f.id }}">{{ f.title }}</a>{% if f.derived_from %} <span class="badge muted">kopia</span>{% endif %}</td>
+    <td><span class="badge {{ 'ok' if f.status == 'godkänd' else 'warn' }}">{{ f.status }}</span></td>
+    <td class="small muted">{{ f.updated[:16].replace('T', ' ') }}</td><td class="small">{{ f.created_by }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<div class="panel muted">Inga formulär ännu.</div>{% endif %}
+{% endblock %}

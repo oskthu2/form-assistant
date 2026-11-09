@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Finns formuläret redan?{% endblock %}
+{% block content %}
+<h1>{{ 'Sökresultat' if searched and not uploads else 'Formuläret verkar redan finnas' if hits else 'Inget känt formulär' }}</h1>
+{% if hits %}
+<p>Det uppladdade underlaget liknar formulär som redan har skapats. En kopia utgår från det befintliga formuläret
+  (med versionshistorik och urval) i stället för att tolka från början.</p>
+<table>
+  <tr><th>Formulär</th><th>Likhet</th><th>Varför</th><th></th></tr>
+  {% for h in hits %}
+  <tr><td><a href="/f/{{ h.form_id }}">{{ h.title }}</a> <span class="badge {{ 'ok' if h.status == 'godkänd' else 'warn' }}">{{ h.status }}</span></td>
+    <td>{{ (h.score * 100)|round|int }} %</td><td class="small">{{ h.reason }}</td>
+    <td><form method="post" action="/f/{{ h.form_id }}/kopia" class="inline">
+      {% for u in uploads %}<input type="hidden" name="upload_ids" value="{{ u.id }}">{% endfor %}
+      <button type="submit">Skapa kopia</button></form></td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% if search_hits %}
+<h2>{{ 'Formulär som matchar beskrivningen' if uploads else 'Formulär som matchar sökningen' }}</h2>
+<table>
+  <tr><th>Formulär</th><th>Träff</th><th></th></tr>
+  {% for h in search_hits %}
+  <tr><td><a href="/f/{{ h.form_id }}">{{ h.title }}</a> <span class="badge {{ 'ok' if h.status == 'godkänd' else 'warn' }}">{{ h.status }}</span></td>
+    <td class="small">{{ h.reason }}</td>
+    <td><form method="post" action="/f/{{ h.form_id }}/kopia" class="inline">
+      {% for u in uploads %}<input type="hidden" name="upload_ids" value="{{ u.id }}">{% endfor %}
+      <button type="submit" class="secondary">Skapa kopia</button></form></td></tr>
+  {% endfor %}
+</table>
+{% elif searched and not hits %}<div class="panel muted">Inga formulär liknar {{ 'underlaget' if uploads else 'sökningen' }}.</div>{% endif %}
+{% if uploads %}
+<form method="post" action="/tolka" data-busy class="panel">
+  {% for u in uploads %}<input type="hidden" name="upload_ids" value="{{ u.id }}">{% endfor %}
+  <input type="hidden" name="hint" value="{{ hint }}">
+  <div class="row"><button type="submit" {{ '' if api_key else 'disabled' }}>{{ 'Tolka ändå som nytt formulär' if hits else 'Tolka som nytt formulär' }}</button>
+    <span class="small muted">{{ uploads|length }} fil(er): {% for u in uploads %}{{ u.filename }}{{ ', ' if not loop.last }}{% endfor %}</span>
+    <span class="spinner muted">Claude tolkar formuläret …</span></div>
+</form>
+{% endif %}
+<p><a href="/">Tillbaka</a></p>
+{% endblock %}

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "form-assistant"
+version = "0.1.0"
+description = "AI-stödd tolkning av formulär (bilder eller PDF) till FHIR Questionnaire för Ineras formulärtjänst"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=2.1",
+    "pydantic>=2.7",
+    "starlette>=0.40",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
+    "pillow>=10",
+    "pypdf>=4",
+    "pypdfium2>=4",            # PDF:ens första sida som bild, för igenkänning
+    "markdown>=3.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx2>=2.13"]
+
+[project.scripts]
+form-assistant = "form_assistant.web:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"form_assistant" = ["templates/*.html", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

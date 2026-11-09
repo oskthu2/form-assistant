@@ -1,0 +1,11 @@
+{
+  "name": "form-assistant",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+  "postCreateCommand": "pip install -e '.[dev]' && pytest -q",
+  "forwardPorts": [8000],
+  "portsAttributes": {"8000": {"label": "Formulärassistenten", "visibility": "private"}},
+  "secrets": {
+    "ANTHROPIC_API_KEY": {"description": "Claude-nyckel för tolkning av formulär (lägg som Codespaces-hemlighet)"}
+  },
+  "customizations": {"vscode": {"extensions": ["ms-python.python"]}}
+}
