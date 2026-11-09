@@ -1,6 +1,7 @@
 """Inställningar, från miljövariabler.
 
     FORM_DB                  SQLite-databasen (standard ./data/form-assistant.db)
+    FORM_MODEL               Claude-modell (standard claude-opus-5-5)
 
 Följande fyra blir det förvalda formulärekosystemet "standard" när databasen skapas; därefter
 förvaltas ekosystemen i webbklienten (se ecosystems.py):
@@ -10,7 +11,6 @@ förvaltas ekosystemen i webbklienten (se ecosystems.py):
     FORM_ALLOWED_EXTENSIONS  extensions som får användas, kommaseparerade (standard: inga)
     FORM_ANSWER_OPTIONS      inline (standard) = svarsalternativ i formuläret (answerOption),
                              valueset = answerValueSet + ValueSet/CodeSystem i bundlen
-    FORM_MODEL               Claude-modell (standard claude-opus-5-5)
 
 Ineras formulärtjänst: IG:n för Questionnaire (Inera FHIR Forms) är ännu inte publicerad.
 Därför används som standard bara element i FHIR R4 core och inga extensions. Den som vet att
