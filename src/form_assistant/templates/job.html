@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Tolkar formuläret' if job.kind == 'tolkning' else 'Reviderar formuläret' }}{% endblock %}
+{% block head %}{% if job.status == 'pågår' %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block content %}
+<h1>{{ 'Claude tolkar formuläret' if job.kind == 'tolkning' else 'Claude reviderar formuläret' }}</h1>
+{% if job.status == 'pågår' %}
+<div class="panel">
+  <p><b>{{ job.progress or 'Arbetar …' }}</b></p>
+  <p class="muted small">Startat {{ started[11:16] }} UTC. Stora formulär (tiotals sidor, hundra frågor) kan ta flera minuter.
+    Sidan uppdateras av sig själv och går vidare till formuläret när det är klart. Du kan lämna sidan och komma tillbaka.</p>
+</div>
+{% elif job.status == 'fel' %}
+<div class="errors">{{ 'Tolkningen' if job.kind == 'tolkning' else 'Revideringen' }} misslyckades: {{ job.error }}</div>
+<p>{% if job.form_id %}<a href="/f/{{ job.form_id }}">Tillbaka till formuläret</a>{% else %}<a href="/">Tillbaka</a>{% endif %}</p>
+{% else %}
+<p><a href="{{ job.result }}">Till formuläret</a></p>
+{% endif %}
+{% endblock %}

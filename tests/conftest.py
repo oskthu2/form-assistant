@@ -96,7 +96,43 @@ class FakeClaude:
         if isinstance(payload, tuple):
             payload, stop = payload
         text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        message_id = f"msg_{len(self.requests)}"
+        if body.get("stream"):
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"},
+                                   content=sse(message_id, text, stop).encode())
         return httpx2.Response(200, json={
             "id": f"msg_{len(self.requests)}", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
             "content": [{"type": "text", "text": text}], "stop_reason": stop, "stop_sequence": None,
             "usage": {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 0}})
+
+
+def sse(message_id: str, text: str, stop: str = "end_turn") -> str:
+    """Ett strömmat svar (Server-Sent Events) med texten i några bitar."""
+    def event(name, data):
+        return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    out = [event("message_start", {"type": "message_start", "message": {
+        "id": message_id, "type": "message", "role": "assistant", "model": "claude-opus-5-5", "content": [],
+        "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": 1000, "output_tokens": 1}}}),
+        event("content_block_start", {"type": "content_block_start", "index": 0,
+                                      "content_block": {"type": "text", "text": ""}})]
+    size = max(1, len(text) // 4)
+    for i in range(0, len(text), size):
+        out.append(event("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                                 "delta": {"type": "text_delta", "text": text[i:i + size]}}))
+    out += [event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+            event("message_delta", {"type": "message_delta", "delta": {"stop_reason": stop, "stop_sequence": None},
+                                    "usage": {"output_tokens": 200}}),
+            event("message_stop", {"type": "message_stop"})]
+    return "".join(out)
+
+
+def follow_job(client, response, timeout: float = 10.0):
+    """Vänta in ett bakgrundsjobb (tolkning/revidering): statussidan går vidare när jobbet är klart."""
+    import time
+    deadline = time.monotonic() + timeout
+    while "/jobb/" in str(response.url) and "misslyckades" not in response.text:
+        if time.monotonic() > deadline:
+            raise AssertionError("jobbet blev inte klart")
+        time.sleep(0.05)
+        response = client.get(str(response.url))
+    return response

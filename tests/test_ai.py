@@ -29,12 +29,15 @@ def test_interpret_sends_files_guidelines_library_and_examples():
     uploads = [{"filename": "sida1.png", "media_type": "image/png", "data": form_image(0, size=(3000, 4000))},
                {"filename": "bilaga.pdf", "media_type": "application/pdf", "data": simple_pdf(["Bilaga"])}]
     example = FormDraft.model_validate(draft_dict() | {"title": "Godkänt exempel"})
+    seen = []
     draft, meta = run(ai.interpret(claude(), CFG, uploads, LIBRARY, ["Telefon och e-post är två frågor."],
-                                   [example], "Hälsodeklaration"))
+                                   [example], "Hälsodeklaration", progress=seen.append))
+    assert seen and ai.count_items(seen[-1]) == len(draft.items)          # framsteg medan svaret strömmar
     assert isinstance(draft, FormDraft) and draft.title == "Hälsodeklaration inför vaccination"
     assert meta["model"] == "claude-opus-5-5" and meta["request_id"] == "msg_1" and meta["kind"] == "ai-tolkning"
     body = claude.requests[0]
     assert body["model"] == "claude-opus-5-5" and body["fallbacks"] == "default"
+    assert body["stream"] is True and body["max_tokens"] == ai.MAX_TOKENS
     assert "server-side-fallback-2026-07-01" in body["_headers"]["anthropic-beta"]
     assert body["output_config"]["effort"] == "high" and body["output_config"]["format"]["type"] == "json_schema"
     system = body["system"][0]

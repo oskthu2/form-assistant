@@ -14,7 +14,7 @@ from form_assistant.config import Config  # noqa: E402
 from form_assistant.db import Database  # noqa: E402
 from form_assistant.web import create_app  # noqa: E402
 
-from conftest import FakeClaude, draft_dict, form_image  # noqa: E402
+from conftest import FakeClaude, draft_dict, follow_job, form_image  # noqa: E402
 
 
 def msg(html: str) -> str:
@@ -32,9 +32,9 @@ def app(tmp_path):
     claude = FakeClaude(draft_dict(), revised,
                         {"guidelines": [{"text": "Flervalsfrågor som gäller hälsa är oftast obligatoriska.",
                                          "rationale": "Rättat vid iteration."}]})
-    client = TestClient(create_app(cfg, db, ai_client_factory=claude), follow_redirects=True)
-    client.cookies.set("anvandare", "anna")
-    return client, claude, db
+    with TestClient(create_app(cfg, db, ai_client_factory=claude), follow_redirects=True) as client:
+        client.cookies.set("anvandare", "anna")
+        yield client, claude, db
 
 
 def test_full_flow(app):
@@ -42,6 +42,8 @@ def test_full_flow(app):
     assert "Nytt formulär" in client.get("/").text
     r = client.post("/ladda-upp", files={"files": ("sida1.png", form_image(0), "image/png")},
                     data={"hint": "Hälsodeklaration inför vaccination", "action": "skapa"})
+    assert any("/jobb/" in str(h.headers.get("location", "")) for h in r.history) or "/jobb/" in str(r.url)
+    r = follow_job(client, r)
     assert "Formuläret är tolkat" in msg(r.text), r.text[:500]
     fid = r.url.path.split("/")[2]
     page = r.text
@@ -49,7 +51,7 @@ def test_full_flow(app):
     assert "Fråga 4 var delvis oläslig." in page and "Alternativen svårlästa." in page
     assert "inga extensions" in page
 
-    r = client.post(f"/f/{fid}/revidera", data={"instruction": "Gör fråga 3 obligatorisk"})
+    r = follow_job(client, client.post(f"/f/{fid}/revidera", data={"instruction": "Gör fråga 3 obligatorisk"}))
     assert "Version 2 är klar" in msg(r.text)
     q = client.get(f"/f/{fid}/questionnaire.json").json()
     allergi = next(i for g in q["item"] for i in g.get("item", []) if i["linkId"] == "allergi")
@@ -98,7 +100,8 @@ def test_full_flow(app):
     assert "1 förslag" in msg(r.text) and "Flervalsfrågor som gäller hälsa" in r.text
     gid = re.search(r'/lardomar/(\d+)/aktiv', r.text).group(1)
     client.post(f"/lardomar/{gid}/aktiv")
-    client.post("/ladda-upp", files={"files": ("annan.png", form_image(1), "image/png")}, data={"action": "skapa"})
+    follow_job(client, client.post("/ladda-upp", files={"files": ("annan.png", form_image(1), "image/png")},
+                                   data={"action": "skapa"}))
     assert "Flervalsfrågor som gäller hälsa" in claude.requests[-1]["system"][0]["text"]
     assert "Godkända formulär som exempel" in claude.requests[-1]["messages"][0]["content"][-1]["text"]
 
@@ -109,7 +112,8 @@ def test_valueset_suggestion_restore_and_errors(app):
         {"system": "https://ex.se/CodeSystem/jnv", "code": "J", "display": "Ja"},
         {"system": "https://ex.se/CodeSystem/jnv", "code": "N", "display": "Nej"},
         {"system": "https://ex.se/CodeSystem/jnv", "code": "V", "display": "Vet ej"}], None)
-    r = client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")}, data={"action": "skapa"})
+    r = follow_job(client, client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")},
+                                       data={"action": "skapa"}))
     fid = r.url.path.split("/")[2]
     assert "Befintliga urval i biblioteket" in r.text and "täcker alla alternativ och fler" in r.text
     r = client.post(f"/f/{fid}/urval", data={"link_id": "graviditet", "url": "https://ex.se/ValueSet/janejvet"})
@@ -130,9 +134,28 @@ def test_valueset_suggestion_restore_and_errors(app):
     assert client.get("/").headers["x-frame-options"] == "DENY"
 
 
-def test_ai_failure_is_shown(tmp_path):
+def test_ai_failure_and_interrupted_jobs(tmp_path):
     cfg = Config(db_path=tmp_path / "db.sqlite")
-    client = TestClient(create_app(cfg, Database(cfg.db_path), ai_client_factory=FakeClaude((draft_dict(), "refusal"))))
-    r = client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")}, data={"action": "skapa"})
-    assert r.status_code == 502 and "avböjde" in r.text
-    assert json.loads(client.get("/health").text) == {"ok": True}
+    db = Database(cfg.db_path)
+    with TestClient(create_app(cfg, db, ai_client_factory=FakeClaude((draft_dict(), "refusal")))) as client:
+        r = follow_job(client, client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")},
+                                           data={"action": "skapa"}))
+        assert "Tolkningen misslyckades" in r.text and "avböjde" in r.text
+        jid = str(r.url).rsplit("/", 1)[1]
+        assert client.get(f"/jobb/{jid}.json").json()["status"] == "fel"
+        assert json.loads(client.get("/health").text) == {"ok": True}
+        assert client.get("/jobb/finns-inte").status_code == 404
+    stuck = db.create_job("tolkning", "anna")
+    create_app(cfg, db, ai_client_factory=FakeClaude(draft_dict()))          # omstart
+    assert db.job(stuck)["status"] == "fel" and "startades om" in db.job(stuck)["error"]
+
+
+def test_job_page_while_running(app):
+    client, _, db = app
+    jid = db.create_job("tolkning", "anna")
+    db.update_job(jid, progress="Claude har beskrivit 42 frågor och rubriker")
+    page = client.get(f"/jobb/{jid}").text
+    assert "Claude tolkar formuläret" in page and "42 frågor" in page and 'http-equiv="refresh"' in page
+    db.update_job(jid, status="klar", result="/f/finns-inte")
+    r = client.get(f"/jobb/{jid}", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/f/finns-inte"

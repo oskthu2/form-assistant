@@ -80,11 +80,11 @@ def form_config(db: Database, cfg: Config, form_id: str) -> tuple[Config, ecosys
 
 
 async def create_form(db: Database, cfg: Config, client, upload_ids: list[str], author: str,
-                      hint: str | None = None, ecosystem: str | None = None) -> str:
+                      hint: str | None = None, ecosystem: str | None = None, progress=None) -> str:
     uploads = uploads_with_data(db, upload_ids)
     eco = ecosystems.get(db, ecosystem)
     draft, meta = await ai.interpret(client, cfg, uploads, db.valuesets(), guideline_texts(db),
-                                     examples_for(db, hint), hint)
+                                     examples_for(db, hint), hint, progress)
     form_id = db.create_form(draft.title, author, upload_ids, ecosystem=eco.code)
     fingerprint, text = _index(draft)
     db.add_revision(form_id, draft, author, "ai-tolkning", hint, provenance=meta, fingerprint=fingerprint,
@@ -92,10 +92,12 @@ async def create_form(db: Database, cfg: Config, client, upload_ids: list[str], 
     return form_id
 
 
-async def revise_form(db: Database, cfg: Config, client, form_id: str, instruction: str, author: str) -> int:
+async def revise_form(db: Database, cfg: Config, client, form_id: str, instruction: str, author: str,
+                      progress=None) -> int:
     draft = _draft(db, form_id)
     uploads = uploads_with_data(db, [u["id"] for u in db.form_uploads(form_id)])
-    revised, meta = await ai.revise(client, cfg, uploads, db.valuesets(), guideline_texts(db), draft, instruction)
+    revised, meta = await ai.revise(client, cfg, uploads, db.valuesets(), guideline_texts(db), draft, instruction,
+                                    progress)
     fingerprint, text = _index(revised)
     return db.add_revision(form_id, revised, author, "ai-revidering", instruction.strip(), provenance=meta,
                            fingerprint=fingerprint, search_text=text)

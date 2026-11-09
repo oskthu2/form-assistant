@@ -17,7 +17,7 @@ from __future__ import annotations
 import base64
 import io
 import json
-from typing import Any
+from typing import Any, Callable
 
 from .config import Config
 from .db import now
@@ -26,6 +26,9 @@ from .model import FormDraft, GuidelineSuggestions
 MAX_IMAGE_EDGE = 2000            # pixlar; formulärtext ska gå att läsa
 MAX_IMAGE_BYTES = 3_500_000      # base64 växer en tredjedel; API:ets gräns är 5 MB per bild
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+MAX_TOKENS = 64000               # stora formulär (100+ frågor) blir långa svar; kräver strömning
+
+Progress = Callable[[str], None]  # får hela texten hittills, för att visa hur långt Claude har kommit
 
 BASE_INSTRUCTION = """\
 Du tolkar svenska formulär och blanketter från bilder eller PDF och beskriver dem strukturerat, så att de kan
@@ -116,6 +119,11 @@ def file_blocks(uploads: list[dict]) -> list[dict[str, Any]]:
     return blocks
 
 
+def count_items(text: str) -> int:
+    """Antal frågor i ett delvis skrivet svar (för framstegsvisning)."""
+    return text.count('"link_id"')
+
+
 def library_text(library: list[dict], limit: int = 80) -> str:
     if not library:
         return "Urvalsbiblioteket är tomt."
@@ -138,21 +146,30 @@ def examples_text(examples: list[FormDraft]) -> str:
     return "\n".join(parts)
 
 
-async def _parse(client, cfg: Config, system: list[dict], content: list[dict], output: type) -> tuple[Any, dict]:
-    response = await client.beta.messages.parse(
+async def _parse(client, cfg: Config, system: list[dict], content: list[dict], output: type,
+                 progress: Progress | None = None) -> tuple[Any, dict]:
+    """Strömmat anrop med strukturerad output: stora formulär tar minuter och blir långa svar."""
+    async with client.beta.messages.stream(
         model=cfg.model,
-        max_tokens=16000,
+        max_tokens=MAX_TOKENS,
         system=system,
         messages=[{"role": "user", "content": content}],
         output_format=output,
         output_config={"effort": "high"},
         betas=[FALLBACK_BETA],
         fallbacks="default",
-    )
+    ) as stream:
+        written = []
+        async for text in stream.text_stream:
+            written.append(text)
+            if progress:
+                progress("".join(written))
+        response = await stream.get_final_message()
     if response.stop_reason == "refusal":
         raise AiError("Claude avböjde att tolka underlaget.")
     if response.stop_reason == "max_tokens":
-        raise AiError("Svaret blev för långt. Dela upp formuläret (t.ex. en sida i taget) och försök igen.")
+        raise AiError("Svaret blev för långt även med den högsta gränsen. Dela upp formuläret (t.ex. några sidor i "
+                      "taget) och slå ihop resultaten genom att iterera.")
     if response.parsed_output is None:
         raise AiError("Claude gav inget tolkningsbart svar.")
     usage = getattr(response, "usage", None)
@@ -165,7 +182,8 @@ async def _parse(client, cfg: Config, system: list[dict], content: list[dict], o
 
 
 async def interpret(client, cfg: Config, uploads: list[dict], library: list[dict], guidelines: list[str],
-                    examples: list[FormDraft], hint: str | None = None) -> tuple[FormDraft, dict]:
+                    examples: list[FormDraft], hint: str | None = None,
+                    progress: Progress | None = None) -> tuple[FormDraft, dict]:
     """Tolka uppladdade bilder/PDF till ett formulärutkast."""
     if not uploads:
         raise AiError("Ladda upp minst en bild eller PDF.")
@@ -174,19 +192,19 @@ async def interpret(client, cfg: Config, uploads: list[dict], library: list[dict
         context.append(f"Användarens beskrivning av formuläret: {hint}")
     context.append("Beskriv formuläret i filerna ovan.")
     content = file_blocks(uploads) + [{"type": "text", "text": "\n\n".join(c for c in context if c)}]
-    draft, meta = await _parse(client, cfg, system_prompt(guidelines), content, FormDraft)
+    draft, meta = await _parse(client, cfg, system_prompt(guidelines), content, FormDraft, progress)
     return draft, meta | {"kind": "ai-tolkning"}
 
 
 async def revise(client, cfg: Config, uploads: list[dict], library: list[dict], guidelines: list[str],
-                 draft: FormDraft, instruction: str) -> tuple[FormDraft, dict]:
+                 draft: FormDraft, instruction: str, progress: Progress | None = None) -> tuple[FormDraft, dict]:
     """Revidera utkastet enligt användarens instruktion (med originalet som underlag)."""
     if not instruction.strip():
         raise AiError("Skriv vad som ska ändras.")
     context = [REVISE_INSTRUCTION, library_text(library),
                f"Nuvarande beskrivning:\n{draft.model_dump_json()}", f"Instruktion: {instruction.strip()}"]
     content = file_blocks(uploads) + [{"type": "text", "text": "\n\n".join(context)}]
-    revised, meta = await _parse(client, cfg, system_prompt(guidelines), content, FormDraft)
+    revised, meta = await _parse(client, cfg, system_prompt(guidelines), content, FormDraft, progress)
     return revised, meta | {"kind": "ai-revidering", "instruction": instruction.strip()}
 
 

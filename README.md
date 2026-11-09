@@ -50,6 +50,10 @@ pytest -q
 3. **Tolkning.** Annars tolkar Claude formuläret till ett strukturerat utkast. Det innehåller
    frågor, typer, numrering, obligatoriska fält, villkor, svarsalternativ och vad frågor om
    personnummer, namn eller organisation betyder. Osäkerheter och iakttagelser visas.
+   Tolkningen körs som ett bakgrundsjobb. Ett stort formulär, med tiotals sidor och hundra
+   frågor, kan ta flera minuter. En statussida visar hur många frågor Claude har beskrivit och
+   går vidare till formuläret när det är klart, så inget anrop hänger tills en proxy ger 504.
+   Svaret strömmas med en gräns på 64 000 tokens.
 4. **Iteration.** Förhandsvisningen visar formuläret som det blir i FHIR. Instruera AI:n ("gör
    fråga 3 obligatorisk", "flera allergier ska kunna väljas"). Varje version sparas och kan
    återställas.
@@ -154,8 +158,10 @@ Biblioteket används på tre sätt:
 Igenkänningen använder fyra signaler, från den billigaste och säkraste till den bredaste:
 
 1. **Samma fil:** SHA-256.
-2. **Samma blankett i bild:** perceptuell hash (dHash, 64 bitar) av bilden eller PDF:ens första
-   sida. Den tål ny skanning, annan upplösning och komprimering, men inte ett annat formulär.
+2. **Samma blankett i bild:** perceptuell hash (dHash, 64 bitar) av bilden eller av första sidan
+   i en skannad PDF. Den tål ny skanning, annan upplösning och komprimering, men inte ett annat
+   formulär. En PDF med textlager avgörs av texten, eftersom första sidan ofta är ett
+   försättsblad som många dokument delar.
 3. **Samma text:** fingeravtryck av hashade ordtripplar i PDF:ens textlager eller i ett tolkat
    formulärs frågor, jämförda med Jaccard-likhet. Det kontrolleras också efter tolkningen, så att
    formulärsidan kan tipsa om ett nästan likadant formulär.

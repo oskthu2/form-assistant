@@ -11,8 +11,10 @@ itereras med instruktioner, får förslag på befintliga urval, godkänns och la
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -75,6 +77,8 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
     cfg = cfg or Config.from_env()
     db = db or Database(cfg.db_path)
     ecosystems.ensure_default(db, cfg)
+    db.interrupt_running_jobs()
+    running: set[asyncio.Task] = set()   # håll referenser så att bakgrundsjobben inte städas bort
     env = Environment(loader=FileSystemLoader(HERE / "templates"), autoescape=select_autoescape(["html"]))
     env.globals.update(quote=quote, KIND_LABELS=KIND_LABELS, SEMANTIC_LABELS=SEMANTIC_LABELS, cfg=cfg,
                        ecosystems=lambda: ecosystems.all_ecosystems(db))
@@ -144,13 +148,58 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
                           searched=False, ecosystem=eco)
         return await interpret(request, [u["id"] for u in stored], hint, eco)
 
+    # -- bakgrundsjobb: tolkning och revidering tar ofta minuter, längre än en proxy väntar --------
+
+    def progress_writer(jid: str):
+        last = {"items": -1, "at": 0.0}
+
+        def write(text: str) -> None:
+            items = ai.count_items(text)
+            if items != last["items"] or time.monotonic() - last["at"] > 5:
+                last.update(items=items, at=time.monotonic())
+                db.update_job(jid, progress=f"Claude har beskrivit {items} frågor och rubriker"
+                              if items else f"Claude läser underlaget ({len(text)} tecken skrivna)")
+        return write
+
+    def start_job(kind: str, request: Request, work, form_id: str | None = None) -> RedirectResponse:
+        jid = db.create_job(kind, user(request), form_id)
+        db.update_job(jid, progress="Claude läser underlaget …")
+
+        async def run():
+            try:
+                result = await work(progress_writer(jid))
+                db.update_job(jid, status="klar", result=result)
+            except Exception as exc:  # noqa: BLE001
+                db.update_job(jid, status="fel", error=friendly(exc))
+        task = asyncio.create_task(run())
+        running.add(task)
+        task.add_done_callback(running.discard)
+        return RedirectResponse(f"/jobb/{jid}", status_code=303)
+
+    async def job_page(request: Request):
+        job = db.job(request.path_params["jid"])
+        if job is None:
+            return render(request, "error.html", status=404, message="Jobbet finns inte.")
+        if job["status"] == "klar" and job["result"]:
+            return RedirectResponse(job["result"], status_code=303)
+        started = job["created"]
+        return render(request, "job.html", job=job, started=started)
+
+    async def job_json(request: Request):
+        job = db.job(request.path_params["jid"])
+        if job is None:
+            return JSONResponse({"error": "Jobbet finns inte."}, status_code=404)
+        return JSONResponse({k: job[k] for k in ("id", "kind", "status", "progress", "error", "result", "form_id")})
+
     async def interpret(request: Request, upload_ids: list[str], hint: str | None, ecosystem: str | None = None):
-        try:
-            form_id = await service.create_form(db, cfg, client(), upload_ids, user(request), hint or None,
-                                                ecosystem)
-        except Exception as exc:  # noqa: BLE001
-            return await index(request, [f"Tolkningen misslyckades: {friendly(exc)}"], 502)
-        return redirect(f"/f/{form_id}", "Formuläret är tolkat. Granska förhandsvisningen och iterera vid behov.")
+        author = user(request)
+
+        async def work(progress):
+            form_id = await service.create_form(db, cfg, client(), upload_ids, author, hint or None, ecosystem,
+                                                progress)
+            return f"/f/{form_id}?" + urlencode({"msg": "Formuläret är tolkat. Granska förhandsvisningen och "
+                                                        "iterera vid behov."})
+        return start_job("tolkning", request, work)
 
     async def interpret_anyway(request: Request):
         form = await request.form()
@@ -196,11 +245,14 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         instruction = ((await request.form()).get("instruction") or "").strip()[:4000]
         if not instruction:
             return redirect(f"/f/{fid}", "Skriv vad som ska ändras.")
-        try:
-            number = await service.revise_form(db, cfg, client(), fid, instruction, user(request))
-        except Exception as exc:  # noqa: BLE001
-            return redirect(f"/f/{fid}", f"Revideringen misslyckades: {friendly(exc)}")
-        return redirect(f"/f/{fid}", f"Version {number} är klar.")
+        if db.form(fid) is None:
+            return render(request, "error.html", status=404, message="Formuläret finns inte.")
+        author = user(request)
+
+        async def work(progress):
+            number = await service.revise_form(db, cfg, client(), fid, instruction, author, progress)
+            return f"/f/{fid}?" + urlencode({"msg": f"Version {number} är klar."})
+        return start_job("revidering", request, work, fid)
 
     async def approve(request: Request):
         fid = request.path_params["fid"]
@@ -367,6 +419,8 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         Route("/ladda-upp", upload, methods=["POST"]),
         Route("/tolka", interpret_anyway, methods=["POST"]),
         Route("/sok", search_page),
+        Route("/jobb/{jid}.json", job_json),       # före /jobb/{jid}, som annars fångar .json
+        Route("/jobb/{jid}", job_page),
         Route("/f/{fid}", form_page),
         Route("/f/{fid}/revidera", revise, methods=["POST"]),
         Route("/f/{fid}/godkann", approve, methods=["POST"]),

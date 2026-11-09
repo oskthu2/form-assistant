@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS valuesets (
     uses INTEGER NOT NULL DEFAULT 0,
     kind TEXT NOT NULL DEFAULT 'svar'
 );
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    form_id TEXT,
+    progress TEXT,
+    error TEXT,
+    result TEXT,
+    created TEXT NOT NULL,
+    updated TEXT NOT NULL,
+    created_by TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS guidelines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     text TEXT NOT NULL,
@@ -226,6 +238,29 @@ class Database:
 
     def use_valueset(self, url: str) -> None:
         self.execute("UPDATE valuesets SET uses = uses + 1 WHERE url = ?", (url,))
+
+    # -- bakgrundsjobb (tolkning och revidering tar ofta minuter) --------------------------------
+
+    def create_job(self, kind: str, user: str, form_id: str | None = None) -> str:
+        jid = new_id()
+        self.execute("INSERT INTO jobs (id, kind, status, form_id, created, updated, created_by) "
+                     "VALUES (?, ?, 'pågår', ?, ?, ?, ?)", (jid, kind, form_id, now(), now(), user))
+        return jid
+
+    def update_job(self, jid: str, **fields: Any) -> None:
+        allowed = {"status", "progress", "error", "result", "form_id"}
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if sets:
+            cols = ", ".join(f"{k} = ?" for k in sets)
+            self.execute(f"UPDATE jobs SET {cols}, updated = ? WHERE id = ?", (*sets.values(), now(), jid))
+
+    def job(self, jid: str) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM jobs WHERE id = ?", (jid,))
+
+    def interrupt_running_jobs(self) -> None:
+        """Jobb som pågick när servern stoppades fortsätter inte – markera dem som avbrutna."""
+        self.execute("UPDATE jobs SET status = 'fel', error = 'Avbrutet – servern startades om. Försök igen.', "
+                     "updated = ? WHERE status = 'pågår'", (now(),))
 
     # -- lärdomar ---------------------------------------------------------------------------
 

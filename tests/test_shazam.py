@@ -64,3 +64,20 @@ def test_pdf_text_layer_is_recognized(tmp_path):
     assert up["media_type"] == "application/pdf" and up["text_fingerprint"]
     hits = shazam.recognize(db, [up])
     assert hits and hits[0].form_id == fid and "samma text" in hits[0].reason
+
+
+def test_pdf_with_text_is_not_matched_on_shared_cover_page(tmp_path):
+    """Två olika PDF:er med samma försättsblad (samma bildhash) men olika text är inte samma formulär."""
+    from reportlab_free_pdf import simple_pdf
+    db = Database(tmp_path / "db.sqlite")
+    first = service.store_upload(db, "a.pdf", "application/pdf", simple_pdf(["Hälsodeklaration inför operation"] * 3 + [
+        "Har du feber idag", "Är du allergisk mot något", "Röker du dagligen"]))
+    draft = FormDraft.model_validate(draft_dict())
+    fid = db.create_form(draft.title, "anna", [first["id"]])
+    service.save_manual(db, fid, draft, "anna", "manuell", None)
+    other = {"id": "x", "filename": "b.pdf", "media_type": "application/pdf", "sha256": "0" * 64,
+             "dhash": first["dhash"], "text_fingerprint": shazam.text_fingerprint("Reseräkning för resor i tjänsten "
+                                                                                   "med bil tåg och flyg samt traktamente")}
+    assert shazam.recognize(db, [other]) == []
+    scanned = other | {"text_fingerprint": None}                         # skannad PDF utan text: bildhashen gäller
+    assert shazam.recognize(db, [scanned])[0].form_id == fid

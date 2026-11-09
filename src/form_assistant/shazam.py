@@ -138,7 +138,9 @@ def recognize(db: Database, uploads: list[dict], exclude: str | None = None) -> 
         for row in known:
             if row["sha256"] == up["sha256"]:
                 offer(row["form_id"], 1.0, f"samma fil ({up['filename']})")
-            elif up.get("dhash") and row["dhash"]:
+            elif up.get("dhash") and row["dhash"] and not _has_text(up):
+                # En PDF med textlager avgörs av texten: första sidan är ofta ett försättsblad som delas av
+                # många dokument (samma mall), och bildhashen skulle då ge falska träffar.
                 score = similarity(up["dhash"], row["dhash"])
                 if score >= IMAGE_STRONG:
                     offer(row["form_id"], score, f"samma blankett i bild ({up['filename']}, {score:.0%} lika)")
@@ -151,6 +153,10 @@ def recognize(db: Database, uploads: list[dict], exclude: str | None = None) -> 
                 if score >= TEXT_STRONG:
                     offer(row["id"], score, f"samma text ({score:.0%} av textavtrycket)")
     return sorted(best.values(), key=lambda h: -h.score)
+
+
+def _has_text(upload: dict) -> bool:
+    return upload.get("media_type") == "application/pdf" and bool(upload.get("text_fingerprint"))
 
 
 def recognize_draft(db: Database, draft: FormDraft, exclude: str | None = None) -> list[Hit]:

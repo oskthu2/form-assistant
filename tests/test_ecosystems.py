@@ -9,7 +9,7 @@ from form_assistant import ecosystems
 from form_assistant.config import REGEX_EXTENSION, Config
 from form_assistant.db import Database
 
-from conftest import FakeClaude, draft_dict, form_image
+from conftest import FakeClaude, draft_dict, follow_job, form_image
 
 CFG = Config(canonical_base="http://example.org/fhir", publisher="Exempel")
 
@@ -68,9 +68,13 @@ def test_ecosystem_per_form_in_web(tmp_path):
     from starlette.testclient import TestClient
     from form_assistant.web import create_app
     cfg = Config(db_path=tmp_path / "db.sqlite")
-    client = TestClient(create_app(cfg, Database(cfg.db_path), ai_client_factory=FakeClaude(draft_dict())),
-                        follow_redirects=True)
-    client.cookies.set("anvandare", "anna")
+    with TestClient(create_app(cfg, Database(cfg.db_path), ai_client_factory=FakeClaude(draft_dict())),
+                    follow_redirects=True) as client:
+        client.cookies.set("anvandare", "anna")
+        _ecosystem_flow(client)
+
+
+def _ecosystem_flow(client):
     r = client.post("/ekosystem", data={"code": "region", "display": "Region Exempel", "answer_options": "valueset",
                                         "canonical_base": "https://fhir.region-exempel.se/formular",
                                         "publisher": "Region Exempel", "allowed_extensions": REGEX_EXTENSION})
@@ -79,8 +83,8 @@ def test_ecosystem_per_form_in_web(tmp_path):
 
     page = client.get("/").text
     assert 'value="region"' in page and 'value="standard" selected' in page
-    r = client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")},
-                    data={"action": "skapa", "ecosystem": "region"})
+    r = follow_job(client, client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")},
+                                       data={"action": "skapa", "ecosystem": "region"}))
     fid = r.url.path.split("/")[2]
     assert "exempeladress" not in r.text
     bundle = client.get(f"/f/{fid}/bundle.json").json()
