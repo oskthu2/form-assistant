@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import time
@@ -736,6 +737,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+    missing = [name for name, module in (("itsdangerous", "itsdangerous"), ("pyjwt", "jwt"), ("anthropic", "anthropic"),
+                                         ("pypdfium2", "pypdfium2"), ("uvicorn", "uvicorn"))
+               if importlib.util.find_spec(module) is None]
+    if missing:
+        raise SystemExit(f"Paket saknas: {', '.join(missing)}. Installera om efter en uppdatering: "
+                         "pip install -e '.[dev]' (i repots katalog).")
     import uvicorn
     cfg = Config.from_env()
     print(f"Formulärassistenten: http://{args.host}:{args.port}  (databas {cfg.db_path}, bas {cfg.canonical_base})")

@@ -31,6 +31,8 @@ pytest -q
    `form-assistant`. Annars skapar du hemligheten där och ger den åtkomst till repot.
 2. Skapa en codespace på grenen. `.devcontainer` installerar och kör testerna. Hemligheten läses
    när codespacen startar, så en codespace som redan kör behöver startas om efter steg 1.
+   Efter `git pull` installerar du om med `pip install -e '.[dev]'`, eftersom nya versioner kan ha
+   nya beroenden. En omstart av codespacen gör det också.
 3. Kör `form-assistant --host 0.0.0.0` och öppna port 8000. Låt porten vara privat: i Codespaces
    körs verktyget i demoläge, där inloggningen bara består av ett namn.
 
