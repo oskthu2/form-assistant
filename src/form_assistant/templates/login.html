@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Logga in{% endblock %}
+{% block content %}
+<h1>Logga in</h1>
+{% if auth_mode == 'demo' %}
+<div class="notice small">Demoläge: ingen riktig inloggning – du anger bara ditt namn. Det hamnar i versionshistoriken och i Provenance.
+  I drift loggar man in via organisationens inloggningstjänst (FORM_AUTH=oidc eller proxy).</div>
+<form method="post" action="/logga-in" class="panel">
+  <input type="hidden" name="next" value="{{ next_url }}">
+  <p><label>Ditt namn<br><input type="text" name="name" autofocus required style="width:min(320px,100%)"></label></p>
+  <button type="submit">Logga in</button>
+</form>
+{% else %}
+<div class="panel">Inloggningen sköts av organisationens inloggningstjänst framför verktyget. Om du ser den här sidan
+  har proxyn inte skickat någon användare – kontakta förvaltningen.</div>
+{% endif %}
+{% if cfg.open_mode %}<p class="small"><a href="/oppen">Fortsätt utan inloggning</a> – ladda upp ett formulär och hämta en Questionnaire.</p>{% endif %}
+{% endblock %}

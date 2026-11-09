@@ -59,8 +59,8 @@ def test_full_flow(app):
     assert "Gör fråga 3 obligatorisk" in claude.requests[1]["messages"][0]["content"][-1]["text"]
     assert any(b["type"] == "image" for b in claude.requests[1]["messages"][0]["content"])   # originalet följer med
 
-    client.cookies.set("anvandare", "")
-    assert "Ange ditt namn" in msg(client.post(f"/f/{fid}/godkann").text)
+    client.cookies.delete("anvandare")
+    assert client.post(f"/f/{fid}/godkann").status_code == 401             # arbetsytan kräver inloggning
     client.cookies.set("anvandare", "bertil")
     r = client.post(f"/f/{fid}/godkann")
     assert "Formuläret är godkänt" in msg(r.text) and "nytt urval" in msg(r.text)
@@ -138,6 +138,7 @@ def test_ai_failure_and_interrupted_jobs(tmp_path):
     cfg = Config(db_path=tmp_path / "db.sqlite")
     db = Database(cfg.db_path)
     with TestClient(create_app(cfg, db, ai_client_factory=FakeClaude((draft_dict(), "refusal")))) as client:
+        client.cookies.set("anvandare", "anna")
         r = follow_job(client, client.post("/ladda-upp", files={"files": ("s.png", form_image(0), "image/png")},
                                            data={"action": "skapa"}))
         assert "Tolkningen misslyckades" in r.text and "avböjde" in r.text

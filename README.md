@@ -31,8 +31,8 @@ pytest -q
    `form-assistant`. Annars skapar du hemligheten där och ger den åtkomst till repot.
 2. Skapa en codespace på grenen. `.devcontainer` installerar och kör testerna. Hemligheten läses
    när codespacen startar, så en codespace som redan kör behöver startas om efter steg 1.
-3. Kör `form-assistant --host 0.0.0.0` och öppna port 8000. Låt porten vara privat, eftersom
-   verktyget saknar inloggning.
+3. Kör `form-assistant --host 0.0.0.0` och öppna port 8000. Låt porten vara privat: i Codespaces
+   körs verktyget i demoläge, där inloggningen bara består av ett namn.
 
 | Miljövariabel | Betydelse |
 |---|---|
@@ -40,7 +40,38 @@ pytest -q
 | `FORM_MODEL` | Claude-modell (standard `claude-opus-5-5`) |
 | `FORM_CANONICAL_BASE`, `FORM_PUBLISHER`, `FORM_ALLOWED_EXTENSIONS`, `FORM_ANSWER_OPTIONS` | värden för det förvalda formulärekosystemet "standard", som skapas första gången (se nedan). Därefter förvaltas ekosystemen i webbklienten |
 
-## Så fungerar det
+## Två lägen
+
+| | Öppet läge | Inloggat läge (arbetsytan) |
+|---|---|---|
+| Vem | vem som helst, utan inloggning | inloggade användare |
+| Gör | laddar upp bilder eller PDF, förhandsvisar och hämtar Questionnaire eller Bundle | allt nedan: iteration med AI:n, urvalsbibliotek, lärdomar, ekosystem, godkännande, versioner |
+| Igenkänning | mot **godkända** formulär, som kan hämtas direkt utan AI-tolkning | mot alla formulär i arbetsytan, med kopia |
+| Lagring | resultatet nås via en hemlig länk och raderas med filerna efter `FORM_OPEN_RETENTION_HOURS` (24 h) | beständigt |
+| Träning | används inte som exempel eller återkoppling | godkända formulär och instruktioner förbättrar prompten |
+
+Det öppna läget skyddas på flera sätt. Varje tolkning är ett AI-anrop, så antalet är begränsat per
+klientadress och timme (`FORM_OPEN_PER_HOUR`, standard 5) och totalt per dygn
+(`FORM_OPEN_PER_DAY`, 100). Även antalet filer (`FORM_OPEN_MAX_FILES`, 5) och sidor per PDF
+(`FORM_OPEN_MAX_PAGES`, 30) är begränsat. Klientadressen sparas bara som en hash. Öppna resultat
+syns aldrig i arbetsytan. Uppladdningarna refereras med signerade id:n, så ingen kan be AI:n tolka
+någon annans fil. En inloggad användare kan välja **Ta in i arbetsytan** på ett öppet resultat och
+arbeta vidare med det. Med `FORM_OPEN=0` stängs det öppna läget av.
+
+### Inloggning (`FORM_AUTH`)
+
+| Läge | Inloggning |
+|---|---|
+| `demo` (standard) | man anger bara sitt namn. Ingen riktig inloggning, och läget är spärrat med `FORM_PRODUCTION=1` |
+| `oidc` | OpenID Connect mot organisationens IdP (Entra ID, Keycloak, Ineras IdP). Flödet använder authorization code med PKCE, `state` och `nonce`, och ID-tokenet valideras mot IdP:ns nycklar (JWKS) med kontroll av utgivare, mottagare och giltighetstid. Bara asymmetriska algoritmer godtas. Variabler: `FORM_OIDC_ISSUER`, `FORM_OIDC_CLIENT_ID`, `FORM_OIDC_CLIENT_SECRET`, `FORM_SESSION_SECRET` (minst 32 tecken) och `FORM_PUBLIC_URL` |
+| `proxy` | en inloggningsproxy framför verktyget skickar användaren i `X-Forwarded-User`. Huvudet godtas bara från `FORM_TRUSTED_PROXIES` och, om det är satt, bara med `FORM_PROXY_SECRET` |
+
+`FORM_ALLOWED_GROUPS` begränsar arbetsytan till vissa grupper från IdP:n eller proxyn. Med
+`FORM_PRODUCTION=1` startar verktyget inte med osäkra inställningar: demoläge, http mot IdP:n,
+kort sessionsnyckel eller en proxy som litar på alla adresser. Mer detaljer står i
+`src/form_assistant/auth.py`.
+
+## Så fungerar det (inloggat läge)
 
 1. **Ladda upp** bilder (en per sida) eller en PDF, gärna med en kort beskrivning.
 2. **Igenkänning ("shazam").** Innan något AI-anrop görs jämförs underlaget med formulären som
@@ -194,6 +225,7 @@ src/form_assistant/
   fhir.py       utkast -> Questionnaire, ValueSet/CodeSystem, Provenance, Bundle
   valuesets.py  urvalsbiblioteket: jämförelse, förslag, sparande
   ecosystems.py formulärekosystemen (lagras som ett urval)
+  auth.py       inloggning för arbetsytan: demo, OpenID Connect, proxy
   shazam.py     igenkänning: filhash, bildhash, textavtryck, sökning
   service.py    arbetsflödet
   db.py         SQLite: uppladdningar, formulär, versioner, urval, lärdomar
@@ -201,5 +233,6 @@ src/form_assistant/
 tests/          tester med fejkad Claude-API och syntetiska blanketter
 ```
 
-Verktyget saknar inloggning. Kör det privat eller bakom en inloggningsproxy, eftersom det
-använder organisationens Claude-nyckel. Formulär som postas från andra webbplatser avvisas.
+Formulär som postas från andra webbplatser avvisas, och sidorna får inte bäddas in i andra sidor.
+Både det öppna läget och arbetsytan använder organisationens Claude-nyckel. Gränserna i det öppna
+läget håller nere kostnaden; stäng av det med `FORM_OPEN=0` om verktyget bara ska användas internt.

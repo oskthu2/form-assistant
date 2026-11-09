@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}{{ draft.title }}{% endblock %}
+{% from "_preview.html" import preview with context %}
+{% block content %}
+<div class="row" style="justify-content:space-between">
+  <h1>{{ draft.title }}</h1>
+  <span class="badge warn">AI-tolkat, inte granskat</span>
+</div>
+<div class="grid">
+  <aside>
+    <div class="panel">
+      <h3>Hämta</h3>
+      <div class="row">
+        <a class="button" href="/oppen/r/{{ token }}/questionnaire.json">Questionnaire (.json)</a>
+        <a class="button secondary" href="/oppen/r/{{ token }}/bundle.json">Bundle med Provenance</a>
+      </div>
+      <p class="small muted">Länken till den här sidan fungerar till {{ form.expires[:16].replace('T', ' ') }} UTC. Därefter raderas
+        resultatet och filerna. Spara länken eller hämta filerna nu.</p>
+      {% if me %}
+      <form method="post" action="/oppen/r/{{ token }}/ta-in"><button type="submit" class="secondary">Ta in i arbetsytan</button></form>
+      <p class="small muted">Då sparas formuläret och du kan iterera med AI:n, välja urval och godkänna det.</p>
+      {% else %}<p class="small"><a href="/logga-in?next=/oppen/r/{{ token }}">Logga in</a> för att arbeta vidare med formuläret.</p>{% endif %}
+    </div>
+    <div class="panel">
+      <h3>Underlag</h3>
+      <div class="thumbs">
+        {% for u in uploads %}
+          {% if u.media_type == 'application/pdf' %}<a href="/oppen/r/{{ token }}/fil/{{ u.id }}" target="_blank" rel="noopener">{{ u.filename }} (PDF)</a>
+          {% else %}<img src="/oppen/r/{{ token }}/fil/{{ u.id }}" alt="{{ u.filename }}">{% endif %}
+        {% endfor %}
+      </div>
+    </div>
+  </aside>
+  <section>
+    {% if build.warnings %}<div class="notice"><b>Anpassningar till FHIR:</b><ul>{% for w in build.warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if draft.notes or uncertain %}
+    <div class="panel"><h3>Kontrollera</h3><ul>
+      {% for n in draft.notes %}<li>{{ n }}</li>{% endfor %}
+      {% for i in uncertain %}<li><a href="#q-{{ i.link_id }}">{{ i.prefix or i.link_id }}</a>: {{ i.uncertainty }}</li>{% endfor %}
+    </ul></div>
+    {% endif %}
+    <div class="panel preview">
+      <h3>Förhandsvisning</h3>
+      {% if q.description %}<p class="muted">{{ q.description }}</p>{% endif %}
+      {{ preview(q['item']) }}
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+{# Förhandsvisning av en Questionnaire – används av formulärsidan och det öppna läget. #}
+{% macro preview(items) %}
+  {% for it in items %}
+  {% set src = draft.item(it.linkId) %}
+  <div class="q {{ it.type }}" id="q-{{ it.linkId }}">
+    <div>{% if it.prefix %}<b>{{ it.prefix }}</b> {% endif %}{{ it.text }}{% if it.required %} <span class="req" title="Obligatorisk">*</span>{% endif %}</div>
+    {% if it.type not in ('group', 'display') %}
+    <div class="meta"><span class="mono">{{ it.linkId }}</span> · {{ it.type }}{% if it.repeats %} · flera svar{% endif %}{% if it.readOnly %} · skrivskyddad{% endif %}{% if it.maxLength %} · max {{ it.maxLength }} tecken{% endif %}
+      {% if src and src.semantic != 'ingen' %} · <span class="badge">{{ SEMANTIC_LABELS.get(src.semantic, src.semantic) }}</span>{% endif %}
+      {% if it.answerValueSet or (src and src.value_set and src.value_set in library) %} · <span class="badge ok" title="{{ it.answerValueSet or src.value_set }}">urval i biblioteket</span>{% endif %}</div>
+    {% endif %}
+    {% for c in it.enableWhen or [] %}<div class="cond">visas om {{ c.question }} {{ c.operator }} {{ (c.answerCoding.display if c.answerCoding else (c.answerString or c.answerBoolean or c.answerInteger or c.answerDecimal or c.answerDate)) }}</div>{% endfor %}
+    {% if it.answerOption %}
+    <ul class="options">{% for o in it.answerOption %}<li>{{ o.valueCoding.display }} <span class="muted mono">{{ o.valueCoding.code }}</span></li>{% endfor %}{% if it.type == 'open-choice' %}<li class="muted">annat: …</li>{% endif %}</ul>
+    {% elif it.answerValueSet and src %}
+    <ul class="options">{% for o in src.options %}<li>{{ o.display }}</li>{% endfor %}</ul>
+    {% elif it.type in ('string', 'url') %}<div class="field"><input type="text" disabled></div>
+    {% elif it.type == 'text' %}<div class="field"><textarea disabled></textarea></div>
+    {% elif it.type == 'boolean' %}<div class="field muted small">○ Ja &nbsp; ○ Nej</div>
+    {% elif it.type in ('date', 'dateTime', 'time', 'integer', 'decimal') %}<div class="field muted small">[{{ it.type }}]</div>
+    {% endif %}
+    {% if src and src.uncertainty %}<div class="notice small">Osäkert: {{ src.uncertainty }}</div>{% endif %}
+    {% if src and suggestions.get(src.link_id) and is_latest %}
+    <details class="small"><summary>Befintliga urval i biblioteket ({{ suggestions[src.link_id]|length }})</summary>
+      {% for m in suggestions[src.link_id][:4] %}
+      <form method="post" action="/f/{{ form.id }}/urval" class="row" style="margin:6px 0">
+        <input type="hidden" name="link_id" value="{{ src.link_id }}"><input type="hidden" name="url" value="{{ m.url }}">
+        <span><b>{{ m.title }}</b> – {{ m.label }} ({{ (m.score * 100)|round|int }} % lika, används i {{ m.uses }} formulär):
+          {% for c in m.concepts[:8] %}{{ c.display }}{{ ', ' if not loop.last }}{% endfor %}{% if m.concepts|length > 8 %} …{% endif %}</span>
+        <button type="submit" class="secondary">Använd</button>
+      </form>{% endfor %}
+    </details>
+    {% endif %}
+    {% if it.item %}{{ preview(it.item) }}{% endif %}
+  </div>
+  {% endfor %}
+{% endmacro %}

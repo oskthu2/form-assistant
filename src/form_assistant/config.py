@@ -12,6 +12,15 @@ förvaltas ekosystemen i webbklienten (se ecosystems.py):
     FORM_ANSWER_OPTIONS      inline (standard) = svarsalternativ i formuläret (answerOption),
                              valueset = answerValueSet + ValueSet/CodeSystem i bundlen
 
+Öppet läge (ladda upp och hämta Questionnaire utan inloggning):
+
+    FORM_OPEN                1 (standard) = öppet läge på, 0 = av (bara inloggat läge)
+    FORM_OPEN_RETENTION_HOURS  hur länge ett öppet resultat (och dess filer) sparas (standard 24)
+    FORM_OPEN_PER_HOUR       tolkningar per klientadress och timme (standard 5)
+    FORM_OPEN_PER_DAY        tolkningar totalt per dygn i öppet läge (standard 100)
+    FORM_OPEN_MAX_FILES      filer per uppladdning (standard 5)
+    FORM_OPEN_MAX_PAGES      sidor per PDF (standard 30)
+
 Ineras formulärtjänst: IG:n för Questionnaire (Inera FHIR Forms) är ännu inte publicerad.
 Därför används som standard bara element i FHIR R4 core och inga extensions. Den som vet att
 tjänsten stöder en viss extension lägger till den i FORM_ALLOWED_EXTENSIONS, t.ex.
@@ -35,6 +44,12 @@ class Config:
     allowed_extensions: frozenset[str] = field(default_factory=frozenset)
     answer_options: str = "inline"
     model: str = "claude-opus-5-5"
+    open_mode: bool = True
+    open_retention_hours: float = 24
+    open_per_hour: int = 5
+    open_per_day: int = 100
+    open_max_files: int = 5
+    open_max_pages: int = 30
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -49,4 +64,10 @@ class Config:
             allowed_extensions=frozenset(allowed),
             answer_options=mode,
             model=os.environ.get("FORM_MODEL", "claude-opus-5-5"),
+            open_mode=os.environ.get("FORM_OPEN", "1").strip() != "0",
+            open_retention_hours=float(os.environ.get("FORM_OPEN_RETENTION_HOURS", "24")),
+            open_per_hour=int(os.environ.get("FORM_OPEN_PER_HOUR", "5")),
+            open_per_day=int(os.environ.get("FORM_OPEN_PER_DAY", "100")),
+            open_max_files=int(os.environ.get("FORM_OPEN_MAX_FILES", "5")),
+            open_max_pages=int(os.environ.get("FORM_OPEN_MAX_PAGES", "30")),
         )

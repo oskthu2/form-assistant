@@ -9,17 +9,23 @@
 </head>
 <body>
 <header class="top">
+  {% if me %}
   <a class="brand" href="/">Formulärassistenten</a>
   <a href="/">Formulär</a>
   <a href="/urval">Urvalsbibliotek</a>
   <a href="/lardomar">Lärdomar</a>
   <a href="/ekosystem">Ekosystem</a>
+  {% if cfg.open_mode %}<a href="/oppen" title="Ladda upp och hämta Questionnaire utan inloggning">Öppet läge</a>{% endif %}
   <span class="spacer"></span>
   <form method="get" action="/sok" role="search"><input type="search" name="q" placeholder="Sök formulär" aria-label="Sök formulär"></form>
-  <form method="post" action="/namn" title="Ditt namn hamnar i versionshistoriken och i Provenance">
-    <input type="text" name="name" value="{{ '' if user == 'okänd' else user }}" placeholder="Ditt namn" aria-label="Ditt namn" style="width:9em">
-    <button type="submit" class="secondary">Spara</button>
-  </form>
+  <span class="small">{{ me.display }}{% if auth_mode == 'demo' %} <span class="badge warn" title="Ingen riktig inloggning">demoläge</span>{% endif %}</span>
+  {% if auth_mode != 'proxy' %}<form method="post" action="/logga-ut"><button type="submit" class="secondary">Logga ut</button></form>{% endif %}
+  {% else %}
+  <a class="brand" href="/">Formulärassistenten</a>
+  <span class="muted small">Öppet läge – ladda upp ett formulär och hämta en FHIR Questionnaire</span>
+  <span class="spacer"></span>
+  <a class="button secondary" href="/logga-in">Logga in</a>
+  {% endif %}
 </header>
 <main>
   {% if not api_key %}<div class="notice">ANTHROPIC_API_KEY saknas – igenkänning, sökning och export fungerar, men inte AI-tolkning.

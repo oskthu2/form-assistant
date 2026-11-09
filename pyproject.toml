@@ -19,6 +19,8 @@ dependencies = [
     "pypdf>=4",
     "pypdfium2>=4",            # PDF:ens första sida som bild, för igenkänning
     "markdown>=3.5",
+    "itsdangerous>=2.1",       # signerad sessionscookie (inloggat läge, OIDC)
+    "pyjwt[crypto]>=2.8",      # validering av ID-token (OIDC)
 ]
 
 [project.optional-dependencies]

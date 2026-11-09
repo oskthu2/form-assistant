@@ -25,9 +25,10 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import ai, ecosystems, service, shazam, valuesets
+from . import ai, auth, ecosystems, service, shazam, valuesets
 from .config import Config
-from .db import Database
+from . import fhir
+from .db import Database, hours_ahead
 from .model import FormDraft
 
 HERE = Path(__file__).parent
@@ -72,16 +73,28 @@ class SecurityMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
-def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_factory=None) -> Starlette:
-    """``ai_client_factory`` ger en AsyncAnthropic-klient (byts mot en fejkad i testerna)."""
+def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_factory=None,
+               auth_cfg: auth.AuthConfig | None = None, oidc_transport=None) -> Starlette:
+    """``ai_client_factory`` ger en AsyncAnthropic-klient och ``oidc_transport`` når IdP:n (byts i testerna)."""
+    import hashlib
+    import hmac
+    import secrets as _secrets
+
+    from itsdangerous import BadSignature, URLSafeTimedSerializer
     cfg = cfg or Config.from_env()
+    auth_cfg = auth_cfg or auth.AuthConfig.from_env()
+    auth_warnings = auth.check(auth_cfg)
+    oidc = auth.Oidc(auth_cfg, oidc_transport) if auth_cfg.mode == "oidc" else None
+    app_secret = auth_cfg.session_secret or _secrets.token_hex(32)
+    signer = URLSafeTimedSerializer(app_secret, salt="oppna-uppladdningar")
     db = db or Database(cfg.db_path)
     ecosystems.ensure_default(db, cfg)
     db.interrupt_running_jobs()
+    db.purge_expired()
     running: set[asyncio.Task] = set()   # håll referenser så att bakgrundsjobben inte städas bort
     env = Environment(loader=FileSystemLoader(HERE / "templates"), autoescape=select_autoescape(["html"]))
     env.globals.update(quote=quote, KIND_LABELS=KIND_LABELS, SEMANTIC_LABELS=SEMANTIC_LABELS, cfg=cfg,
-                       ecosystems=lambda: ecosystems.all_ecosystems(db))
+                       ecosystems=lambda: ecosystems.all_ecosystems(db), auth_mode=auth_cfg.mode)
 
     def client():
         if ai_client_factory:
@@ -89,13 +102,54 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         from anthropic import AsyncAnthropic
         return AsyncAnthropic()
 
+    # -- inloggning -------------------------------------------------------------------------------
+
+    def current(request: Request) -> auth.User | None:
+        """Den inloggade användaren, eller None (öppet läge)."""
+        if hasattr(request.state, "user"):
+            return request.state.user
+        found = None
+        if auth_cfg.mode == "demo":
+            name = (request.cookies.get("anvandare") or "").strip()[:80]
+            found = auth.User(username=name, source="demo") if name else None
+        elif auth_cfg.mode == "proxy":
+            found = auth.proxy_user(request.headers, request.client.host if request.client else None, auth_cfg)
+        else:
+            data = request.session.get("user")
+            if data and time.time() - request.session.get("login_at", 0) < auth_cfg.session_minutes * 60:
+                found = auth.User(**data)
+        if found is not None and not auth.allowed(auth_cfg, found):
+            found = None
+        request.state.user = found
+        return found
+
     def user(request: Request) -> str:
-        return (request.cookies.get("anvandare") or "").strip()[:80] or "okänd"
+        me = current(request)
+        return me.username if me else "okänd"
+
+    def login_required(endpoint):
+        """Arbetsytans sidor: kräver inloggning, och ett formulär måste höra till arbetsytan."""
+        async def guarded(request: Request):
+            if current(request) is None:
+                if request.method == "GET":
+                    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+                    return RedirectResponse(f"/logga-in?{urlencode({'next': target})}", status_code=303)
+                return render(request, "error.html", status=401, message="Logga in för att använda arbetsytan.")
+            fid = request.path_params.get("fid")
+            if fid and db.workspace_form(fid) is None:
+                return render(request, "error.html", status=404, message="Formuläret finns inte.")
+            return await endpoint(request)
+        return guarded
+
+    def client_key(request: Request) -> str:
+        """Klientadressen, hashad (för gränserna i öppet läge – adressen sparas inte i klartext)."""
+        host = request.client.host if request.client else "okänd"
+        return "klient:" + hmac.new(app_secret.encode(), host.encode(), hashlib.sha256).hexdigest()[:16]
 
     def render(request: Request, name: str, status: int = 200, **ctx) -> HTMLResponse:
         ctx.setdefault("msg", request.query_params.get("msg"))
         ctx.setdefault("errors", [])
-        page = env.get_template(name).render(request=request, user=user(request),
+        page = env.get_template(name).render(request=request, user=user(request), me=current(request),
                                              api_key=bool(os.environ.get("ANTHROPIC_API_KEY")) or bool(ai_client_factory),
                                              **ctx)
         return HTMLResponse(page, status_code=status)
@@ -161,8 +215,9 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
                               if items else f"Claude läser underlaget ({len(text)} tecken skrivna)")
         return write
 
-    def start_job(kind: str, request: Request, work, form_id: str | None = None) -> RedirectResponse:
-        jid = db.create_job(kind, user(request), form_id)
+    def start_job(kind: str, request: Request, work, form_id: str | None = None, owner: str | None = None,
+                  page: str = "/jobb") -> RedirectResponse:
+        jid = db.create_job(kind, owner or user(request), form_id)
         db.update_job(jid, progress="Claude läser underlaget …")
 
         async def run():
@@ -174,10 +229,12 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         task = asyncio.create_task(run())
         running.add(task)
         task.add_done_callback(running.discard)
-        return RedirectResponse(f"/jobb/{jid}", status_code=303)
+        return RedirectResponse(f"{page}/{jid}", status_code=303)
 
     async def job_page(request: Request):
         job = db.job(request.path_params["jid"])
+        if job is not None and job["kind"] == "öppen-tolkning":
+            job = None
         if job is None:
             return render(request, "error.html", status=404, message="Jobbet finns inte.")
         if job["status"] == "klar" and job["result"]:
@@ -187,6 +244,8 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
 
     async def job_json(request: Request):
         job = db.job(request.path_params["jid"])
+        if job is not None and job["kind"] == "öppen-tolkning":
+            job = None
         if job is None:
             return JSONResponse({"error": "Jobbet finns inte."}, status_code=404)
         return JSONResponse({k: job[k] for k in ("id", "kind", "status", "progress", "error", "result", "form_id")})
@@ -315,8 +374,16 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         return Response(json.dumps(exp.build.questionnaire, ensure_ascii=False, indent=2),
                         media_type="application/fhir+json")
 
+    def file_response(row) -> Response:
+        return Response(row["data"], media_type=row["media_type"],
+                        headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff",
+                                 "Content-Disposition": f'inline; filename="{quote(row["filename"])}"'})
+
     async def file(request: Request):
-        row = db.upload(request.path_params["uid"], with_data=True)
+        uid = request.path_params["uid"]
+        in_workspace = db.one("SELECT 1 FROM form_uploads fu JOIN forms f ON f.id = fu.form_id "
+                              "WHERE fu.upload_id = ? AND f.visibility = 'arbetsyta'", (uid,))
+        row = db.upload(uid, with_data=True) if in_workspace else None
         if row is None:
             return Response(status_code=404)
         return Response(row["data"], media_type=row["media_type"],
@@ -403,47 +470,265 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         db.decide_guideline(int(request.path_params["gid"]), decision, user(request))
         return redirect("/lardomar", "Lärdomen gäller från nästa tolkning." if decision == "aktiv" else "Avvisad.")
 
-    async def set_name(request: Request):
-        name = ((await request.form()).get("name") or "").strip()[:80]
-        response = RedirectResponse(request.headers.get("referer") or "/", status_code=303)
-        response.set_cookie("anvandare", name, httponly=True, samesite="lax", max_age=365 * 86400)
+    # -- inloggning och utloggning ----------------------------------------------------------------
+
+    def safe_next(value: str | None) -> str:
+        return value if value and value.startswith("/") and not value.startswith("//") else "/"
+
+    def public_base(request: Request) -> str:
+        return auth_cfg.public_url or str(request.base_url).rstrip("/")
+
+    async def login_page(request: Request, errors=None, status=200):
+        next_url = safe_next(request.query_params.get("next"))
+        if current(request) is not None:
+            return RedirectResponse(next_url, status_code=303)
+        if auth_cfg.mode == "oidc":
+            try:
+                url, pending = await oidc.login(public_base(request) + "/auth/callback")
+            except Exception as exc:  # noqa: BLE001 – IdP:n nås inte
+                return render(request, "error.html", status=502, message=f"Inloggningstjänsten kunde inte nås ({exc}).")
+            request.session["pending"] = pending | {"next": next_url}
+            return RedirectResponse(url, status_code=303)
+        return render(request, "login.html", status=status, next_url=next_url, errors=errors or [],
+                      warnings=auth_warnings)
+
+    async def login_submit(request: Request):
+        if auth_cfg.mode != "demo":
+            return RedirectResponse("/logga-in", status_code=303)
+        form = await request.form()
+        name = (form.get("name") or "").strip()[:80]
+        if not name:
+            return await login_page(request, ["Ange ditt namn."], 400)
+        response = RedirectResponse(safe_next(form.get("next")), status_code=303)
+        response.set_cookie("anvandare", name, httponly=True, samesite="lax", max_age=30 * 86400)
         return response
+
+    async def callback(request: Request):
+        if oidc is None:
+            return RedirectResponse("/", status_code=303)
+        pending = request.session.pop("pending", None)
+        if request.query_params.get("error"):
+            return render(request, "error.html", status=401,
+                          message=f"Inloggningen avbröts ({request.query_params.get('error')}).")
+        try:
+            found, id_token = await oidc.finish(request.query_params.get("code", ""),
+                                                request.query_params.get("state", ""), pending)
+        except auth.AuthError as exc:
+            return render(request, "error.html", status=401, message=str(exc))
+        if not auth.allowed(auth_cfg, found):
+            return render(request, "error.html", status=403, message="Du saknar behörighet till arbetsytan "
+                          "(ingen av de tillåtna grupperna).")
+        request.session.clear()
+        request.session.update(user={"username": found.username, "name": found.name, "email": found.email,
+                                     "groups": found.groups, "source": "oidc"},
+                               login_at=int(time.time()), id_token=id_token)
+        return RedirectResponse(safe_next((pending or {}).get("next")), status_code=303)
+
+    async def logout(request: Request):
+        if auth_cfg.mode == "demo":
+            response = RedirectResponse("/", status_code=303)
+            response.delete_cookie("anvandare")
+            return response
+        if auth_cfg.mode == "oidc":
+            id_token = request.session.get("id_token")
+            request.session.clear()
+            try:
+                url = await oidc.logout_url(id_token, public_base(request) + "/")
+            except Exception:  # noqa: BLE001 – lokal utloggning räcker
+                url = None
+            return RedirectResponse(url or "/", status_code=303)
+        return render(request, "error.html", message="Logga ut i inloggningstjänsten (proxyn).")
+
+    # -- öppet läge: ladda upp och hämta Questionnaire, utan inloggning ---------------------------
+
+    def open_enabled(endpoint):
+        async def wrapped(request: Request):
+            if not cfg.open_mode:
+                return RedirectResponse("/logga-in", status_code=303)
+            db.purge_expired()
+            return await endpoint(request)
+        return wrapped
+
+    async def start(request: Request):
+        if current(request) is not None:
+            return await index(request)
+        if cfg.open_mode:
+            return await open_index(request)
+        return RedirectResponse("/logga-in", status_code=303)
+
+    async def open_index(request: Request, errors=None, status=200):
+        return render(request, "open_index.html", status=status, errors=errors or [])
+
+    async def open_upload(request: Request):
+        form = await request.form()
+        files = [f for f in form.getlist("files") if getattr(f, "filename", "")]
+        hint = (form.get("hint") or "").strip()[:1000]
+        if not files:
+            return await open_index(request, ["Ladda upp en bild eller PDF av formuläret."], 400)
+        if len(files) > cfg.open_max_files:
+            return await open_index(request, [f"Högst {cfg.open_max_files} filer åt gången."], 400)
+        stored = []
+        try:
+            for f in files:
+                up = service.store_upload(db, f.filename, f.content_type, await f.read())
+                db.mark_open_upload(up["id"], hours_ahead(cfg.open_retention_hours))
+                stored.append(up)
+            service.check_open_limits(db, cfg, client_key(request), stored)
+        except service.ServiceError as exc:
+            return await open_index(request, [str(exc)], 400)
+        ticket = signer.dumps({"uploads": [u["id"] for u in stored], "hint": hint})
+        hits = shazam.recognize(db, stored, approved_only=True)
+        if hits:
+            return render(request, "open_match.html", hits=hits, ticket=ticket)
+        return open_interpret(request, ticket)
+
+    def open_interpret(request: Request, ticket: str):
+        try:
+            data = signer.loads(ticket, max_age=3600)
+        except BadSignature:
+            return render(request, "error.html", status=400, message="Uppladdningen har gått ut – ladda upp igen.")
+        token = _secrets.token_urlsafe(24)
+
+        async def work(progress):
+            await service.create_open_form(db, cfg, client(), data["uploads"], data.get("hint") or None, token,
+                                           progress)
+            return f"/oppen/r/{token}"
+        return start_job("öppen-tolkning", request, work, owner=client_key(request), page="/oppen/jobb")
+
+    async def open_interpret_anyway(request: Request):
+        ticket = (await request.form()).get("ticket") or ""
+        try:
+            data = signer.loads(ticket, max_age=3600)
+            service.check_open_limits(db, cfg, client_key(request),
+                                      [dict(db.upload(uid)) for uid in data["uploads"] if db.upload(uid)])
+        except BadSignature:
+            return render(request, "error.html", status=400, message="Uppladdningen har gått ut – ladda upp igen.")
+        except service.ServiceError as exc:
+            return await open_index(request, [str(exc)], 400)
+        return open_interpret(request, ticket)
+
+    async def open_job_page(request: Request):
+        job = db.job(request.path_params["jid"])
+        if job is None or job["kind"] != "öppen-tolkning":
+            return render(request, "error.html", status=404, message="Jobbet finns inte.")
+        if job["status"] == "klar" and job["result"]:
+            return RedirectResponse(job["result"], status_code=303)
+        return render(request, "job.html", job=job, started=job["created"])
+
+    def open_form_or_404(request: Request):
+        return db.open_form(request.path_params["token"])
+
+    async def open_result(request: Request):
+        form = open_form_or_404(request)
+        if form is None:
+            return render(request, "error.html", status=404, message="Resultatet finns inte längre – öppna resultat "
+                          f"raderas efter {cfg.open_retention_hours:g} timmar.")
+        exp = service.export(db, cfg, form["id"])
+        draft = db.draft(form["id"])
+        return render(request, "open_result.html", form=form, draft=draft, q=exp.build.questionnaire,
+                      build=exp.build, uploads=db.form_uploads(form["id"]), token=request.path_params["token"],
+                      uncertain=[i for i in draft.items if i.uncertainty], library={}, suggestions={},
+                      is_latest=False)
+
+    async def open_download(request: Request):
+        form = open_form_or_404(request)
+        if form is None:
+            return JSONResponse({"error": "Resultatet finns inte längre."}, status_code=404)
+        return download(service.export(db, cfg, form["id"]), request.path_params["kind"],
+                        request.query_params.get("typ"))
+
+    async def open_file(request: Request):
+        form = open_form_or_404(request)
+        uid = request.path_params["uid"]
+        if form is None or not db.one("SELECT 1 FROM form_uploads WHERE form_id = ? AND upload_id = ?",
+                                      (form["id"], uid)):
+            return Response(status_code=404)
+        return file_response(db.upload(uid, with_data=True))
+
+    async def approved_download(request: Request):
+        """Ett godkänt formulär som det öppna läget kände igen – kan hämtas direkt, utan AI-tolkning."""
+        form = db.workspace_form(request.path_params["fid"])
+        if form is None or form["status"] != "godkänd":
+            return JSONResponse({"error": "Formuläret finns inte."}, status_code=404)
+        return download(service.export(db, cfg, form["id"]), request.path_params["kind"],
+                        request.query_params.get("typ"))
+
+    def download(exp, kind: str, typ: str | None) -> Response:
+        if kind == "questionnaire":
+            content, name = exp.build.questionnaire, f"{exp.build.questionnaire['id']}.json"
+        elif kind == "bundle":
+            content = exp.bundle if typ != "collection" else fhir.bundle(
+                exp.build.questionnaire, exp.build.valuesets, exp.provenance, exp.config, transaction=False)
+            name = f"{exp.build.questionnaire['id']}-bundle.json"
+        else:
+            return Response(status_code=404)
+        return Response(json.dumps(content, ensure_ascii=False, indent=2), media_type="application/fhir+json",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    async def claim(request: Request):
+        form = open_form_or_404(request)
+        if form is None:
+            return render(request, "error.html", status=404, message="Resultatet finns inte längre.")
+        db.claim(form["id"], user(request))
+        service.reindex(db, form["id"])
+        return redirect(f"/f/{form['id']}", "Formuläret är taget in i arbetsytan – nu kan du iterera, välja urval "
+                                            "och godkänna det.")
 
     async def health(request: Request):
         return JSONResponse({"ok": True})
 
     routes = [
-        Route("/", index),
+        Route("/", start),
         Route("/health", health),
-        Route("/namn", set_name, methods=["POST"]),
-        Route("/ladda-upp", upload, methods=["POST"]),
-        Route("/tolka", interpret_anyway, methods=["POST"]),
-        Route("/sok", search_page),
-        Route("/jobb/{jid}.json", job_json),       # före /jobb/{jid}, som annars fångar .json
-        Route("/jobb/{jid}", job_page),
-        Route("/f/{fid}", form_page),
-        Route("/f/{fid}/revidera", revise, methods=["POST"]),
-        Route("/f/{fid}/godkann", approve, methods=["POST"]),
-        Route("/f/{fid}/kopia", copy, methods=["POST"]),
-        Route("/f/{fid}/urval", use_valueset, methods=["POST"]),
-        Route("/f/{fid}/aterstall", restore, methods=["POST"]),
-        Route("/f/{fid}/bundle.json", bundle),
-        Route("/f/{fid}/questionnaire.json", questionnaire_json),
-        Route("/fil/{uid}", file),
-        Route("/f/{fid}/ekosystem", set_form_ecosystem, methods=["POST"]),
-        Route("/ekosystem", ecosystems_page, methods=["GET"]),
-        Route("/ekosystem", ecosystems_save, methods=["POST"]),
-        Route("/ekosystem/resurs", ecosystems_json),
-        Route("/urval", library_page),
-        Route("/urval/resurs", valueset_json),
-        Route("/lardomar", guidelines_page),
-        Route("/lardomar/foresla", guidelines_suggest, methods=["POST"]),
-        Route("/lardomar/ny", guidelines_add, methods=["POST"]),
-        Route("/lardomar/{gid:int}/{beslut}", guidelines_decide, methods=["POST"]),
+        Route("/logga-in", login_page, methods=["GET"]),
+        Route("/logga-in", login_submit, methods=["POST"]),
+        Route("/auth/callback", callback),
+        Route("/logga-ut", logout, methods=["GET", "POST"]),
+        # öppet läge
+        Route("/oppen", open_enabled(open_index)),
+        Route("/oppen/tolka", open_enabled(open_upload), methods=["POST"]),
+        Route("/oppen/tolka-anda", open_enabled(open_interpret_anyway), methods=["POST"]),
+        Route("/oppen/jobb/{jid}", open_enabled(open_job_page)),
+        Route("/oppen/r/{token}", open_enabled(open_result)),
+        Route("/oppen/r/{token}/fil/{uid}", open_enabled(open_file)),
+        Route("/oppen/r/{token}/ta-in", login_required(claim), methods=["POST"]),
+        Route("/oppen/r/{token}/{kind}.json", open_enabled(open_download)),
+        Route("/oppen/godkand/{fid}/{kind}.json", open_enabled(approved_download)),
+        # inloggat läge (arbetsytan)
+        Route("/ladda-upp", login_required(upload), methods=["POST"]),
+        Route("/tolka", login_required(interpret_anyway), methods=["POST"]),
+        Route("/sok", login_required(search_page)),
+        Route("/jobb/{jid}.json", login_required(job_json)),       # före /jobb/{jid}, som annars fångar .json
+        Route("/jobb/{jid}", login_required(job_page)),
+        Route("/f/{fid}", login_required(form_page)),
+        Route("/f/{fid}/revidera", login_required(revise), methods=["POST"]),
+        Route("/f/{fid}/godkann", login_required(approve), methods=["POST"]),
+        Route("/f/{fid}/kopia", login_required(copy), methods=["POST"]),
+        Route("/f/{fid}/urval", login_required(use_valueset), methods=["POST"]),
+        Route("/f/{fid}/aterstall", login_required(restore), methods=["POST"]),
+        Route("/f/{fid}/bundle.json", login_required(bundle)),
+        Route("/f/{fid}/questionnaire.json", login_required(questionnaire_json)),
+        Route("/fil/{uid}", login_required(file)),
+        Route("/f/{fid}/ekosystem", login_required(set_form_ecosystem), methods=["POST"]),
+        Route("/ekosystem", login_required(ecosystems_page), methods=["GET"]),
+        Route("/ekosystem", login_required(ecosystems_save), methods=["POST"]),
+        Route("/ekosystem/resurs", login_required(ecosystems_json)),
+        Route("/urval", login_required(library_page)),
+        Route("/urval/resurs", login_required(valueset_json)),
+        Route("/lardomar", login_required(guidelines_page)),
+        Route("/lardomar/foresla", login_required(guidelines_suggest), methods=["POST"]),
+        Route("/lardomar/ny", login_required(guidelines_add), methods=["POST"]),
+        Route("/lardomar/{gid:int}/{beslut}", login_required(guidelines_decide), methods=["POST"]),
         Mount("/static", StaticFiles(directory=HERE / "static"), name="static"),
     ]
     from starlette.middleware import Middleware
-    return Starlette(routes=routes, middleware=[Middleware(SecurityMiddleware)])
+    from starlette.middleware.sessions import SessionMiddleware
+    middleware = [Middleware(SecurityMiddleware)]
+    if auth_cfg.mode == "oidc":
+        middleware.append(Middleware(SessionMiddleware, secret_key=app_secret, session_cookie="formular_session",
+                                     max_age=auth_cfg.session_minutes * 60, same_site="lax",
+                                     https_only=(auth_cfg.public_url or "").startswith("https://")))
+    return Starlette(routes=routes, middleware=middleware)
 
 
 def main(argv: list[str] | None = None) -> None:

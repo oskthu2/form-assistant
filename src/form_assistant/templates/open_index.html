@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Formulär till FHIR Questionnaire{% endblock %}
+{% block content %}
+<h1>Formulär till FHIR Questionnaire</h1>
+<div class="panel">
+  <form method="post" action="/oppen/tolka" enctype="multipart/form-data" data-busy>
+    <p>Ladda upp en eller några bilder av ett formulär (en per sida), eller en PDF. Om formuläret redan finns som godkänt kan du
+      hämta det direkt. Annars tolkar Claude det till en FHIR Questionnaire som du förhandsvisar och laddar ner.</p>
+    <p><input type="file" name="files" multiple required accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"></p>
+    <p><label class="small muted" for="hint">Beskrivning (valfritt)</label>
+      <textarea id="hint" name="hint" placeholder="T.ex. Hälsodeklaration inför operation, fylls i av patienten"></textarea></p>
+    <div class="row">
+      <button type="submit" {{ '' if api_key else 'disabled' }}>Skapa Questionnaire</button>
+      <span class="spinner muted">Laddar upp …</span>
+    </div>
+  </form>
+</div>
+<div class="small muted">
+  <p>Högst {{ cfg.open_max_files }} filer och {{ cfg.open_max_pages }} sidor per PDF. Resultatet nås via en egen länk och raderas, med
+    filerna, efter {{ cfg.open_retention_hours|round|int }} timmar. Ladda inte upp ifyllda formulär med personuppgifter – använd tomma blanketter.</p>
+  <p>Formulären följer FHIR R4 utan extensions, och frågor om personnummer och organisation kopplas till HL7 Sveriges basprofiler.
+    <a href="/logga-in">Logga in</a> för att iterera med AI:n, återanvända urval och godkänna formulär.</p>
+</div>
+{% endblock %}

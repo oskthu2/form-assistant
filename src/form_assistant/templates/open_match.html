@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Formuläret finns redan{% endblock %}
+{% block content %}
+<h1>Formuläret finns redan</h1>
+<p>Underlaget liknar ett godkänt formulär. Du kan hämta det direkt – det är granskat och godkänt.</p>
+<table>
+  <tr><th>Formulär</th><th>Likhet</th><th>Varför</th><th></th></tr>
+  {% for h in hits %}
+  <tr><td><b>{{ h.title }}</b></td><td>{{ (h.score * 100)|round|int }} %</td><td class="small">{{ h.reason }}</td>
+    <td class="row"><a class="button" href="/oppen/godkand/{{ h.form_id }}/questionnaire.json">Questionnaire</a>
+      <a class="button secondary" href="/oppen/godkand/{{ h.form_id }}/bundle.json">Bundle</a></td></tr>
+  {% endfor %}
+</table>
+<form method="post" action="/oppen/tolka-anda" class="panel" data-busy style="margin-top:14px">
+  <input type="hidden" name="ticket" value="{{ ticket }}">
+  <div class="row"><button type="submit" class="secondary" {{ '' if api_key else 'disabled' }}>Tolka ändå som nytt formulär</button>
+    <span class="spinner muted">Startar …</span></div>
+</form>
+<p><a href="/oppen">Tillbaka</a></p>
+{% endblock %}

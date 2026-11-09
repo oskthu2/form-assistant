@@ -9,7 +9,7 @@ from typing import Any
 
 from . import ai, ecosystems, fhir, shazam, valuesets
 from .config import Config
-from .db import Database, now
+from .db import Database, hours_ahead, now
 from .model import FormDraft
 
 ACCEPTED = {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
@@ -103,6 +103,45 @@ async def revise_form(db: Database, cfg: Config, client, form_id: str, instructi
                            fingerprint=fingerprint, search_text=text)
 
 
+def pdf_pages(data: bytes) -> int:
+    try:
+        from pypdf import PdfReader
+        import io
+        return len(PdfReader(io.BytesIO(data)).pages)
+    except Exception:  # noqa: BLE001 – en PDF som inte går att läsa avvisas av Claude i stället
+        return 0
+
+
+def check_open_limits(db: Database, cfg: Config, client_key: str, uploads: list[dict]) -> None:
+    """Gränser i öppet läge: varje tolkning är ett AI-anrop som någon betalar för."""
+    if len(uploads) > cfg.open_max_files:
+        raise ServiceError(f"Högst {cfg.open_max_files} filer åt gången i öppet läge.")
+    for up in uploads:
+        if up["media_type"] == "application/pdf":
+            data = db.upload(up["id"], with_data=True)["data"]
+            if pdf_pages(data) > cfg.open_max_pages:
+                raise ServiceError(f"{up['filename']}: högst {cfg.open_max_pages} sidor i öppet läge – logga in för "
+                                   "större dokument.")
+    from .db import _hours_ago
+    if db.open_jobs_since(_hours_ago(1), client_key) >= cfg.open_per_hour:
+        raise ServiceError("Du har gjort många tolkningar den senaste timmen – vänta en stund och försök igen.")
+    if db.open_jobs_since(_hours_ago(24)) >= cfg.open_per_day:
+        raise ServiceError("Det öppna läget har nått dagens gräns för tolkningar – försök igen i morgon eller logga in.")
+
+
+async def create_open_form(db: Database, cfg: Config, client, upload_ids: list[str], hint: str | None,
+                           token: str, progress=None) -> str:
+    """Öppet läge: tolka med det förvalda ekosystemet. Resultatet nås bara med token och raderas efter en tid.
+    Inga exempel från arbetsytan skickas med (de kan vara interna), men godkända lärdomar och urval används."""
+    uploads = uploads_with_data(db, upload_ids)
+    eco = ecosystems.get(db, None)
+    draft, meta = await ai.interpret(client, cfg, uploads, db.valuesets(), guideline_texts(db), [], hint, progress)
+    form_id = db.create_form(draft.title, "anonym (öppet läge)", upload_ids, ecosystem=eco.code, visibility="oppen",
+                             token=token, expires=hours_ahead(cfg.open_retention_hours))
+    db.add_revision(form_id, draft, "anonym (öppet läge)", "ai-tolkning", hint, provenance=meta)
+    return form_id
+
+
 def save_manual(db: Database, form_id: str, draft: FormDraft, author: str, kind: str, note: str | None) -> int:
     fingerprint, text = _index(draft)
     return db.add_revision(form_id, draft, author, kind, note, fingerprint=fingerprint, search_text=text)
@@ -163,6 +202,7 @@ class Export:
     provenance: dict
     bundle: dict
     revision: int
+    config: Config
 
 
 def export(db: Database, cfg: Config, form_id: str, number: int | None = None, transaction: bool = True) -> Export:
@@ -192,7 +232,16 @@ def export(db: Database, cfg: Config, form_id: str, number: int | None = None, t
                            {"url": origin_url, "title": origin["title"]} if origin is not None and origin_url
                            else None, now())
     return Export(build, prov, fhir.bundle(build.questionnaire, build.valuesets, prov, cfg, transaction),
-                  row["number"])
+                  row["number"], cfg)
+
+
+def reindex(db: Database, form_id: str) -> None:
+    """Fingeravtryck och söktext för ett formulär (t.ex. när ett öppet resultat tas in i arbetsytan)."""
+    draft = db.draft(form_id)
+    if draft is not None:
+        fingerprint, text = _index(draft)
+        db.execute("UPDATE forms SET fingerprint = ?, search_text = ? WHERE id = ?",
+                   (json.dumps(fingerprint), text, form_id))
 
 
 def _draft(db: Database, form_id: str) -> FormDraft:

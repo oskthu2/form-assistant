@@ -118,7 +118,12 @@ class Hit:
     rank: float = 0.0     # för sortering inom samma score (sökning)
 
 
-def recognize(db: Database, uploads: list[dict], exclude: str | None = None) -> list[Hit]:
+def _scope(approved_only: bool) -> str:
+    """Bara arbetsytans formulär räknas (öppna formulär är privata); i öppet läge bara godkända."""
+    return "f.visibility = 'arbetsyta'" + (" AND f.status = 'godkänd'" if approved_only else "")
+
+
+def recognize(db: Database, uploads: list[dict], exclude: str | None = None, approved_only: bool = False) -> list[Hit]:
     """Formulär som de uppladdade filerna verkar vara (samma fil, samma bild eller samma text)."""
     best: dict[str, Hit] = {}
 
@@ -131,9 +136,10 @@ def recognize(db: Database, uploads: list[dict], exclude: str | None = None) -> 
         if form_id not in best or score > best[form_id].score:
             best[form_id] = Hit(form_id, form["title"], form["status"], round(score, 2), reason)
 
-    known = db.all("SELECT u.id, u.sha256, u.dhash, u.text_fingerprint, f.form_id FROM uploads u "
-                   "JOIN form_uploads f ON f.upload_id = u.id")
-    forms = db.all("SELECT id, fingerprint FROM forms WHERE fingerprint IS NOT NULL")
+    known = db.all("SELECT u.id, u.sha256, u.dhash, u.text_fingerprint, fu.form_id FROM uploads u "
+                   "JOIN form_uploads fu ON fu.upload_id = u.id JOIN forms f ON f.id = fu.form_id "
+                   f"WHERE {_scope(approved_only)}")
+    forms = db.all(f"SELECT f.id, f.fingerprint FROM forms f WHERE f.fingerprint IS NOT NULL AND {_scope(approved_only)}")
     for up in uploads:
         for row in known:
             if row["sha256"] == up["sha256"]:
@@ -159,11 +165,13 @@ def _has_text(upload: dict) -> bool:
     return upload.get("media_type") == "application/pdf" and bool(upload.get("text_fingerprint"))
 
 
-def recognize_draft(db: Database, draft: FormDraft, exclude: str | None = None) -> list[Hit]:
+def recognize_draft(db: Database, draft: FormDraft, exclude: str | None = None,
+                    approved_only: bool = False) -> list[Hit]:
     """Efter tolkning: finns ett formulär med nästan samma frågor?"""
     fingerprint = text_fingerprint(draft_text(draft))
     hits = []
-    for row in db.all("SELECT id, title, status, fingerprint FROM forms WHERE fingerprint IS NOT NULL"):
+    for row in db.all("SELECT f.id, f.title, f.status, f.fingerprint FROM forms f WHERE f.fingerprint IS NOT NULL "
+                      f"AND {_scope(approved_only)}"):
         if row["id"] == exclude:
             continue
         score = jaccard(fingerprint, json.loads(row["fingerprint"]))
@@ -178,7 +186,7 @@ def search(db: Database, query: str, limit: int = 5) -> list[Hit]:
     terms = set(words(query))
     if not terms:
         return []
-    rows = db.all("SELECT id, title, status, search_text FROM forms")
+    rows = db.all("SELECT id, title, status, search_text FROM forms WHERE visibility = 'arbetsyta'")
     docs = []
     for row in rows:
         head = words(row["title"])

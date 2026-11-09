@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS forms (
     approved_at TEXT,
     derived_from TEXT,
     ecosystem TEXT,
+    visibility TEXT NOT NULL DEFAULT 'arbetsyta',
+    token TEXT,
+    expires TEXT,
     fingerprint TEXT,
     search_text TEXT
 );
@@ -71,6 +74,10 @@ CREATE TABLE IF NOT EXISTS valuesets (
     uses INTEGER NOT NULL DEFAULT 0,
     kind TEXT NOT NULL DEFAULT 'svar'
 );
+CREATE TABLE IF NOT EXISTS open_uploads (
+    upload_id TEXT PRIMARY KEY,
+    expires TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -98,6 +105,16 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _hours_ago(hours: float) -> str:
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
+def hours_ahead(hours: float) -> str:
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat(timespec="seconds")
+
+
 def new_id() -> str:
     return secrets.token_hex(6)
 
@@ -117,6 +134,8 @@ class Database:
     def _migrate(self) -> None:
         """Kolumner som tillkommit efter första versionen (databaser som redan finns)."""
         for table, column, ddl in (("forms", "ecosystem", "TEXT"),
+                                   ("forms", "visibility", "TEXT NOT NULL DEFAULT 'arbetsyta'"),
+                                   ("forms", "token", "TEXT"), ("forms", "expires", "TEXT"),
                                    ("valuesets", "kind", "TEXT NOT NULL DEFAULT 'svar'")):
             columns = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if column not in columns:
@@ -161,11 +180,14 @@ class Database:
     # -- formulär och versioner -----------------------------------------------------------
 
     def create_form(self, title: str, author: str, upload_ids: list[str], derived_from: str | None = None,
-                    ecosystem: str | None = None) -> str:
+                    ecosystem: str | None = None, visibility: str = "arbetsyta", token: str | None = None,
+                    expires: str | None = None) -> str:
+        """visibility 'arbetsyta' = inloggat läge; 'oppen' = öppet läge (nås bara med token, raderas vid expires)."""
         fid = new_id()
         stamp = now()
-        self.execute("INSERT INTO forms (id, title, created, updated, created_by, derived_from, ecosystem) "
-                     "VALUES (?, ?, ?, ?, ?, ?, ?)", (fid, title, stamp, stamp, author, derived_from, ecosystem))
+        self.execute("INSERT INTO forms (id, title, created, updated, created_by, derived_from, ecosystem, visibility, "
+                     "token, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (fid, title, stamp, stamp, author, derived_from, ecosystem, visibility, token, expires))
         for position, uid in enumerate(upload_ids):
             self.execute("INSERT OR IGNORE INTO form_uploads (form_id, upload_id, position) VALUES (?, ?, ?)",
                          (fid, uid, position))
@@ -175,9 +197,55 @@ class Database:
         return self.one("SELECT * FROM forms WHERE id = ?", (fid,))
 
     def forms(self, status: str | None = None) -> list[sqlite3.Row]:
+        """Arbetsytans formulär (öppna formulär syns aldrig här)."""
         if status:
-            return self.all("SELECT * FROM forms WHERE status = ? ORDER BY updated DESC", (status,))
-        return self.all("SELECT * FROM forms ORDER BY updated DESC")
+            return self.all("SELECT * FROM forms WHERE status = ? AND visibility = 'arbetsyta' ORDER BY updated DESC",
+                            (status,))
+        return self.all("SELECT * FROM forms WHERE visibility = 'arbetsyta' ORDER BY updated DESC")
+
+    def workspace_form(self, fid: str) -> sqlite3.Row | None:
+        return self.one("SELECT * FROM forms WHERE id = ? AND visibility = 'arbetsyta'", (fid,))
+
+    def open_form(self, token: str) -> sqlite3.Row | None:
+        if not token or len(token) < 20:
+            return None
+        return self.one("SELECT * FROM forms WHERE token = ? AND visibility = 'oppen' AND expires > ?", (token, now()))
+
+    def claim(self, fid: str, user: str) -> None:
+        """Ta in ett öppet formulär i arbetsytan (det raderas då inte längre automatiskt)."""
+        self.execute("UPDATE forms SET visibility = 'arbetsyta', token = NULL, expires = NULL, created_by = ?, "
+                     "updated = ? WHERE id = ?", (user, now(), fid))
+
+    def purge_expired(self) -> int:
+        """Radera öppna formulär som gått ut, med versioner, jobb och filer som inget annat formulär använder."""
+        expired = [r["id"] for r in self.all("SELECT id FROM forms WHERE visibility = 'oppen' AND expires <= ?",
+                                             (now(),))]
+        for fid in expired:
+            uploads = [r["upload_id"] for r in self.all("SELECT upload_id FROM form_uploads WHERE form_id = ?", (fid,))]
+            self.execute("DELETE FROM revisions WHERE form_id = ?", (fid,))
+            self.execute("DELETE FROM form_uploads WHERE form_id = ?", (fid,))
+            self.execute("DELETE FROM jobs WHERE form_id = ?", (fid,))
+            self.execute("DELETE FROM forms WHERE id = ?", (fid,))
+            for uid in uploads:
+                if not self.one("SELECT 1 FROM form_uploads WHERE upload_id = ?", (uid,)):
+                    self.execute("DELETE FROM uploads WHERE id = ?", (uid,))
+        # filer från öppna uppladdningar som aldrig blev ett formulär (t.ex. avbrutna)
+        self.execute("DELETE FROM uploads WHERE id NOT IN (SELECT upload_id FROM form_uploads) "
+                     "AND id IN (SELECT upload_id FROM open_uploads WHERE expires <= ?)", (now(),))
+        self.execute("DELETE FROM open_uploads WHERE upload_id NOT IN (SELECT id FROM uploads)")
+        self.execute("DELETE FROM jobs WHERE kind = 'öppen-tolkning' AND updated <= ?", (_hours_ago(48),))
+        return len(expired)
+
+    def mark_open_upload(self, uid: str, expires: str) -> None:
+        self.execute("INSERT OR REPLACE INTO open_uploads (upload_id, expires) VALUES (?, ?)", (uid, expires))
+
+    def open_jobs_since(self, since: str, client: str | None = None) -> int:
+        if client:
+            row = self.one("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'öppen-tolkning' AND created >= ? "
+                           "AND created_by = ?", (since, client))
+        else:
+            row = self.one("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'öppen-tolkning' AND created >= ?", (since,))
+        return row["n"]
 
     def add_revision(self, fid: str, draft: FormDraft, author: str, kind: str, instruction: str | None = None,
                      provenance: dict | None = None, fingerprint: list[int] | None = None,
