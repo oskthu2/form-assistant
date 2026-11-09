@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS forms (
     approved_by TEXT,
     approved_at TEXT,
     derived_from TEXT,
+    ecosystem TEXT,
     fingerprint TEXT,
     search_text TEXT
 );
@@ -67,7 +68,8 @@ CREATE TABLE IF NOT EXISTS valuesets (
     concepts TEXT NOT NULL,
     source_form TEXT,
     created TEXT NOT NULL,
-    uses INTEGER NOT NULL DEFAULT 0
+    uses INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'svar'
 );
 CREATE TABLE IF NOT EXISTS guidelines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,6 +100,16 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Kolumner som tillkommit efter första versionen (databaser som redan finns)."""
+        for table, column, ddl in (("forms", "ecosystem", "TEXT"),
+                                   ("valuesets", "kind", "TEXT NOT NULL DEFAULT 'svar'")):
+            columns = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                with self.conn:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
         with self._lock, self.conn:
@@ -136,11 +148,12 @@ class Database:
 
     # -- formulär och versioner -----------------------------------------------------------
 
-    def create_form(self, title: str, author: str, upload_ids: list[str], derived_from: str | None = None) -> str:
+    def create_form(self, title: str, author: str, upload_ids: list[str], derived_from: str | None = None,
+                    ecosystem: str | None = None) -> str:
         fid = new_id()
         stamp = now()
-        self.execute("INSERT INTO forms (id, title, created, updated, created_by, derived_from) "
-                     "VALUES (?, ?, ?, ?, ?, ?)", (fid, title, stamp, stamp, author, derived_from))
+        self.execute("INSERT INTO forms (id, title, created, updated, created_by, derived_from, ecosystem) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)", (fid, title, stamp, stamp, author, derived_from, ecosystem))
         for position, uid in enumerate(upload_ids):
             self.execute("INSERT OR IGNORE INTO form_uploads (form_id, upload_id, position) VALUES (?, ?, ?)",
                          (fid, uid, position))
@@ -181,24 +194,35 @@ class Database:
         row = self.revision(fid, number)
         return FormDraft.model_validate_json(row["draft"]) if row else None
 
+    def set_ecosystem(self, fid: str, code: str) -> None:
+        self.execute("UPDATE forms SET ecosystem = ?, updated = ? WHERE id = ?", (code, now(), fid))
+
     def approve(self, fid: str, user: str) -> None:
         self.execute("UPDATE forms SET status = 'godkänd', approved_by = ?, approved_at = ?, updated = ? WHERE id = ?",
                      (user, now(), now(), fid))
 
     # -- urval ----------------------------------------------------------------------------
 
-    def valuesets(self) -> list[dict[str, Any]]:
+    def valuesets(self, kind: str = "svar") -> list[dict[str, Any]]:
+        """Urvalen i biblioteket. kind 'svar' = svarsalternativ, 'ekosystem' = formulärekosystemen."""
         return [dict(r) | {"concepts": json.loads(r["concepts"])}
-                for r in self.all("SELECT * FROM valuesets ORDER BY uses DESC, title")]
+                for r in self.all("SELECT * FROM valuesets WHERE kind = ? ORDER BY uses DESC, title", (kind,))]
 
-    def valueset(self, url: str) -> dict[str, Any] | None:
-        row = self.one("SELECT * FROM valuesets WHERE url = ?", (url,))
+    def valueset(self, url: str, kind: str = "svar") -> dict[str, Any] | None:
+        row = self.one("SELECT * FROM valuesets WHERE url = ? AND kind = ?", (url, kind))
         return dict(row) | {"concepts": json.loads(row["concepts"])} if row else None
 
     def save_valueset(self, url: str, name: str, title: str, concepts: list[dict], source_form: str | None) -> None:
         self.execute("INSERT INTO valuesets (url, name, title, concepts, source_form, created, uses) "
                      "VALUES (?, ?, ?, ?, ?, ?, 1) ON CONFLICT(url) DO UPDATE SET uses = uses + 1",
                      (url, name, title, json.dumps(concepts, ensure_ascii=False), source_form, now()))
+
+    def put_valueset(self, url: str, name: str, title: str, concepts: list[dict], kind: str) -> None:
+        """Skriv ett urval i sin helhet (används för urval som förvaltas i verktyget, t.ex. ekosystemen)."""
+        self.execute("INSERT INTO valuesets (url, name, title, concepts, created, uses, kind) VALUES (?, ?, ?, ?, ?, 0, ?) "
+                     "ON CONFLICT(url) DO UPDATE SET name = excluded.name, title = excluded.title, "
+                     "concepts = excluded.concepts", (url, name, title, json.dumps(concepts, ensure_ascii=False),
+                                                      now(), kind))
 
     def use_valueset(self, url: str) -> None:
         self.execute("UPDATE valuesets SET uses = uses + 1 WHERE url = ?", (url,))

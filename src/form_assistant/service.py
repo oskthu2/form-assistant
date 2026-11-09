@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from . import ai, fhir, shazam, valuesets
+from . import ai, ecosystems, fhir, shazam, valuesets
 from .config import Config
 from .db import Database, now
 from .model import FormDraft
@@ -72,12 +72,20 @@ def _index(draft: FormDraft) -> tuple[list[int], str]:
     return shazam.text_fingerprint(shazam.draft_text(draft)), shazam.search_text(draft)
 
 
+def form_config(db: Database, cfg: Config, form_id: str) -> tuple[Config, ecosystems.Ecosystem]:
+    """Inställningarna för formulärets ekosystem (canonical-bas, utgivare, svarsalternativ, extensions)."""
+    form = db.form(form_id)
+    eco = ecosystems.get(db, form["ecosystem"] if form else None)
+    return ecosystems.config_for(cfg, eco), eco
+
+
 async def create_form(db: Database, cfg: Config, client, upload_ids: list[str], author: str,
-                      hint: str | None = None) -> str:
+                      hint: str | None = None, ecosystem: str | None = None) -> str:
     uploads = uploads_with_data(db, upload_ids)
+    eco = ecosystems.get(db, ecosystem)
     draft, meta = await ai.interpret(client, cfg, uploads, db.valuesets(), guideline_texts(db),
                                      examples_for(db, hint), hint)
-    form_id = db.create_form(draft.title, author, upload_ids)
+    form_id = db.create_form(draft.title, author, upload_ids, ecosystem=eco.code)
     fingerprint, text = _index(draft)
     db.add_revision(form_id, draft, author, "ai-tolkning", hint, provenance=meta, fingerprint=fingerprint,
                     search_text=text)
@@ -98,12 +106,15 @@ def save_manual(db: Database, form_id: str, draft: FormDraft, author: str, kind:
     return db.add_revision(form_id, draft, author, kind, note, fingerprint=fingerprint, search_text=text)
 
 
-def copy_form(db: Database, form_id: str, author: str, upload_ids: list[str] | None = None) -> str:
-    """Ett nytt formulär som utgår från ett befintligt (derivedFrom) – i stället för att tolka från början."""
+def copy_form(db: Database, form_id: str, author: str, upload_ids: list[str] | None = None,
+              ecosystem: str | None = None) -> str:
+    """Ett nytt formulär som utgår från ett befintligt (derivedFrom) – i stället för att tolka från början.
+    Kopian kan skapas för ett annat ekosystem än originalet."""
     source = db.form(form_id)
     draft = _draft(db, form_id)
     uploads = upload_ids or [u["id"] for u in db.form_uploads(form_id)]
-    new_id = db.create_form(draft.title, author, uploads, derived_from=form_id)
+    eco = ecosystems.get(db, ecosystem or source["ecosystem"])
+    new_id = db.create_form(draft.title, author, uploads, derived_from=form_id, ecosystem=eco.code)
     save_manual(db, new_id, draft, author, "kopia", f"Kopia av {source['title']} ({form_id})")
     return new_id
 
@@ -123,10 +134,21 @@ def use_valueset(db: Database, form_id: str, link_id: str, url: str, author: str
     return save_manual(db, form_id, draft, author, "urval", f"{link_id}: urvalet {vs['title']} ({url})")
 
 
+def set_ecosystem(db: Database, form_id: str, code: str) -> ecosystems.Ecosystem:
+    if db.form(form_id) is None:
+        raise ServiceError("Formuläret finns inte.")
+    eco = ecosystems.get(db, code)
+    if eco.code != code:
+        raise ServiceError(f"Ekosystemet {code} finns inte.")
+    db.set_ecosystem(form_id, code)
+    return eco
+
+
 def approve(db: Database, cfg: Config, form_id: str, user: str) -> list[str]:
-    """Godkänn: urvalen sparas i biblioteket (eller kopplas till befintliga) och formuläret blir aktivt."""
+    """Godkänn: urvalen sparas i biblioteket (eller kopplas till befintliga) och formuläret blir aktivt.
+    Nya urval får canonical URL:er under formulärets ekosystem."""
     draft = _draft(db, form_id)
-    updated, log = valuesets.save_from_draft(db, form_id, draft, cfg)
+    updated, log = valuesets.save_from_draft(db, form_id, draft, form_config(db, cfg, form_id)[0])
     if updated != draft:
         save_manual(db, form_id, updated, user, "urval", "Urvalen kopplade till biblioteket vid godkännande")
     db.approve(form_id, user)
@@ -149,6 +171,7 @@ def export(db: Database, cfg: Config, form_id: str, number: int | None = None, t
     if row is None:
         raise ServiceError("Formuläret har ingen version.")
     draft = FormDraft.model_validate_json(row["draft"])
+    cfg, _ = form_config(db, cfg, form_id)
     approved = form["status"] == "godkänd" and number is None
     library = {vs["url"]: vs for vs in db.valuesets()}
     origin = db.form(form["derived_from"]) if form["derived_from"] else None
@@ -156,7 +179,8 @@ def export(db: Database, cfg: Config, form_id: str, number: int | None = None, t
     if origin is not None:
         origin_draft = db.draft(origin["id"])
         if origin_draft:
-            origin_url = fhir.questionnaire(origin["id"], origin_draft, 0, cfg).questionnaire["url"]
+            origin_cfg, _ = form_config(db, cfg, origin["id"])
+            origin_url = fhir.questionnaire(origin["id"], origin_draft, 0, origin_cfg).questionnaire["url"]
     build = fhir.questionnaire(form_id, draft, row["number"], cfg, library, approved=approved,
                                derived_from=origin_url, date=row["created"][:10])
     revisions = [dict(r) | {"provenance": json.loads(r["provenance"]) if r["provenance"] else None}

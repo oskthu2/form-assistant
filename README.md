@@ -23,17 +23,22 @@ form-assistant                                               # http://127.0.0.1:
 pytest -q
 ```
 
-I GitHub Codespaces: lägg `ANTHROPIC_API_KEY` som Codespaces-hemlighet för repot och starta
-`form-assistant --host 0.0.0.0`. Låt port 8000 vara privat, eftersom verktyget saknar inloggning.
+### GitHub Codespaces
+
+1. Claude-nyckeln är en Codespaces-hemlighet på ditt konto, och den når bara de repon den har
+   åtkomst till. Har du redan `ANTHROPIC_API_KEY` för ett annat repo: gå till **GitHub → Settings
+   → Codespaces → Secrets → ANTHROPIC_API_KEY → Repository access** och lägg till
+   `form-assistant`. Annars skapar du hemligheten där och ger den åtkomst till repot.
+2. Skapa en codespace på grenen. `.devcontainer` installerar och kör testerna. Hemligheten läses
+   när codespacen startar, så en codespace som redan kör behöver startas om efter steg 1.
+3. Kör `form-assistant --host 0.0.0.0` och öppna port 8000. Låt porten vara privat, eftersom
+   verktyget saknar inloggning.
 
 | Miljövariabel | Betydelse |
 |---|---|
 | `FORM_DB` | SQLite-databasen (standard `data/form-assistant.db`) |
-| `FORM_CANONICAL_BASE` | bas för canonical URL:er för Questionnaire, ValueSet och CodeSystem |
-| `FORM_PUBLISHER` | utgivare i resurserna |
-| `FORM_ALLOWED_EXTENSIONS` | extensions som får användas, kommaseparerade (standard: inga) |
-| `FORM_ANSWER_OPTIONS` | `inline` (standard): svarsalternativen i formuläret. `valueset`: `answerValueSet` med ValueSet och CodeSystem i bundlen |
 | `FORM_MODEL` | Claude-modell (standard `claude-opus-5-5`) |
+| `FORM_CANONICAL_BASE`, `FORM_PUBLISHER`, `FORM_ALLOWED_EXTENSIONS`, `FORM_ANSWER_OPTIONS` | värden för det förvalda formulärekosystemet "standard", som skapas första gången (se nedan). Därefter förvaltas ekosystemen i webbklienten |
 
 ## Så fungerar det
 
@@ -55,6 +60,27 @@ I GitHub Codespaces: lägg `ANTHROPIC_API_KEY` som Codespaces-hemlighet för rep
 7. **Export.** Du laddar ner Bundlen: Questionnaire (`PUT`), eventuella ValueSet och CodeSystem
    (`PUT`) och Provenance (`POST`).
 
+## Formulärekosystem
+
+Ett formulärekosystem är den formulärtjänst eller organisation som formulären skapas för, till
+exempel Ineras formulärtjänst eller en region. Ekosystemet bestämmer:
+
+- canonical-basen för formulärets och de nya urvalens URL:er
+- utgivaren
+- hur svarsalternativen uttrycks: `answerOption` i formuläret, eller `answerValueSet` med
+  ValueSet och CodeSystem i bundlen
+- vilka extensions tjänsten stöder
+
+Ekosystemen lagras som ett **urval** och kan hämtas som FHIR CodeSystem (med egenskaperna
+`canonical-base`, `publisher`, `answer-options`, `allowed-extension` och `default`) och
+ValueSet. Ekosystemet väljs i en vallista när formuläret laddas upp och kan bytas på
+formulärsidan. En kopia kan skapas för ett annat ekosystem än originalet.
+
+Första gången skapas ekosystemet **standard** från miljövariablerna ovan och blir förvalt.
+Under **Ekosystem** lägger du till fler, ändrar dem och väljer vilket som är förvalt. Ett
+ekosystem med en exempeladress (`example.org`) som bas får en varning, eftersom adressen måste
+bytas innan formulär laddas upp i en riktig tjänst.
+
 ## Kompatibilitet med Ineras formulärtjänst – få extensions
 
 Ineras IG för Questionnaire och QuestionnaireResponse
@@ -74,7 +100,7 @@ extensions**:
 
 Det AI:n beskriver görs om till FHIR av koden, inte av AI:n. Därför följer resultatet reglerna
 oavsett vad modellen svarar, och det som måste anpassas visas som varningar. När det är klart vilka
-extensions formulärtjänsten stöder läggs de i `FORM_ALLOWED_EXTENSIONS`. Med
+extensions formulärtjänsten stöder läggs de till på ekosystemet. Med
 `http://hl7.org/fhir/StructureDefinition/regex` får till exempel personnummer, HSA-id och
 organisationsnummer ett valideringsmönster.
 
@@ -107,7 +133,8 @@ Bundlen innehåller en Provenance för formuläret:
 - **underlag (`entity`):** de uppladdade filerna med SHA-256, varje instruktion vid iteration och,
   för en kopia, ursprungsformuläret (`derivation`)
 
-Bundlarna validerar utan fel mot FHIR R4 med HL7-validatorn, när `FORM_CANONICAL_BASE` är satt.
+Bundlarna validerar utan fel mot FHIR R4 med HL7-validatorn, när ekosystemet har en riktig
+canonical-bas.
 
 ## Urvalsbiblioteket
 
@@ -160,6 +187,7 @@ src/form_assistant/
   ai.py         tolkning, revidering och förslag på lärdomar (Claude, strukturerad output)
   fhir.py       utkast -> Questionnaire, ValueSet/CodeSystem, Provenance, Bundle
   valuesets.py  urvalsbiblioteket: jämförelse, förslag, sparande
+  ecosystems.py formulärekosystemen (lagras som ett urval)
   shazam.py     igenkänning: filhash, bildhash, textavtryck, sökning
   service.py    arbetsflödet
   db.py         SQLite: uppladdningar, formulär, versioner, urval, lärdomar

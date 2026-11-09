@@ -23,7 +23,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import ai, service, shazam, valuesets
+from . import ai, ecosystems, service, shazam, valuesets
 from .config import Config
 from .db import Database
 from .model import FormDraft
@@ -74,9 +74,10 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
     """``ai_client_factory`` ger en AsyncAnthropic-klient (byts mot en fejkad i testerna)."""
     cfg = cfg or Config.from_env()
     db = db or Database(cfg.db_path)
+    ecosystems.ensure_default(db, cfg)
     env = Environment(loader=FileSystemLoader(HERE / "templates"), autoescape=select_autoescape(["html"]))
     env.globals.update(quote=quote, KIND_LABELS=KIND_LABELS, SEMANTIC_LABELS=SEMANTIC_LABELS, cfg=cfg,
-                       example_base="example.org" in cfg.canonical_base or "example.com" in cfg.canonical_base)
+                       ecosystems=lambda: ecosystems.all_ecosystems(db))
 
     def client():
         if ai_client_factory:
@@ -120,6 +121,7 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         files = [f for f in form.getlist("files") if getattr(f, "filename", "")]
         hint = (form.get("hint") or "").strip()[:1000]
         action = form.get("action") or "skapa"
+        eco = ecosystems.get(db, form.get("ecosystem")).code
         if not files and not hint:
             return await index(request, ["Ladda upp en bild eller PDF, eller beskriv formuläret du letar efter."], 400)
         if len(files) > service.MAX_FILES:
@@ -136,27 +138,29 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         search_hits = [h for h in shazam.search(db, hint) if h.form_id not in {x.form_id for x in hits}] if hint else []
         if action == "sok" or not stored:
             return render(request, "match.html", hits=hits, search_hits=search_hits, uploads=stored, hint=hint,
-                          searched=True)
+                          searched=True, ecosystem=eco)
         if hits:
             return render(request, "match.html", hits=hits, search_hits=search_hits, uploads=stored, hint=hint,
-                          searched=False)
-        return await interpret(request, [u["id"] for u in stored], hint)
+                          searched=False, ecosystem=eco)
+        return await interpret(request, [u["id"] for u in stored], hint, eco)
 
-    async def interpret(request: Request, upload_ids: list[str], hint: str | None):
+    async def interpret(request: Request, upload_ids: list[str], hint: str | None, ecosystem: str | None = None):
         try:
-            form_id = await service.create_form(db, cfg, client(), upload_ids, user(request), hint or None)
+            form_id = await service.create_form(db, cfg, client(), upload_ids, user(request), hint or None,
+                                                ecosystem)
         except Exception as exc:  # noqa: BLE001
             return await index(request, [f"Tolkningen misslyckades: {friendly(exc)}"], 502)
         return redirect(f"/f/{form_id}", "Formuläret är tolkat. Granska förhandsvisningen och iterera vid behov.")
 
     async def interpret_anyway(request: Request):
         form = await request.form()
-        return await interpret(request, form.getlist("upload_ids"), (form.get("hint") or "").strip())
+        return await interpret(request, form.getlist("upload_ids"), (form.get("hint") or "").strip(),
+                               form.get("ecosystem"))
 
     async def search_page(request: Request):
         q = (request.query_params.get("q") or "").strip()
         return render(request, "match.html", hits=[], search_hits=shazam.search(db, q, limit=10) if q else [],
-                      uploads=[], hint=q, searched=True)
+                      uploads=[], hint=q, searched=True, ecosystem=None)
 
     # -- formuläret ------------------------------------------------------------------------------
 
@@ -184,6 +188,7 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
                       uploads=db.form_uploads(fid), revisions=db.revisions(fid),
                       suggestions=valuesets.suggestions(draft, library), library={v["url"]: v for v in library},
                       similar=similar, origin=origin, meta=meta,
+                      ecosystem=service.form_config(db, cfg, fid)[1],
                       uncertain=[i for i in draft.items if i.uncertainty])
 
     async def revise(request: Request):
@@ -212,7 +217,8 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         fid = request.path_params["fid"]
         form = await request.form()
         try:
-            new_id = service.copy_form(db, fid, user(request), form.getlist("upload_ids") or None)
+            new_id = service.copy_form(db, fid, user(request), form.getlist("upload_ids") or None,
+                                       form.get("ecosystem") or None)
         except service.ServiceError as exc:
             return redirect("/", str(exc))
         return redirect(f"/f/{new_id}", "En kopia är skapad – iterera på den i stället för att börja från början.")
@@ -266,6 +272,44 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
                                  "Content-Disposition": f'inline; filename="{quote(row["filename"])}"'})
 
     # -- urval och lärdomar ---------------------------------------------------------------------
+
+    async def set_form_ecosystem(request: Request):
+        fid = request.path_params["fid"]
+        try:
+            eco = service.set_ecosystem(db, fid, (await request.form()).get("ecosystem") or "")
+        except service.ServiceError as exc:
+            return redirect(f"/f/{fid}", str(exc))
+        return redirect(f"/f/{fid}", f"Formuläret hör nu till {eco.display} ({eco.canonical_base}).")
+
+    async def ecosystems_page(request: Request, errors=None, status=200, edit=None):
+        code = request.query_params.get("redigera")
+        current = edit or (next((e for e in ecosystems.all_ecosystems(db) if e.code == code), None) if code else None)
+        counts = {}
+        for f in db.forms():
+            key = ecosystems.get(db, f["ecosystem"]).code
+            counts[key] = counts.get(key, 0) + 1
+        return render(request, "ecosystems.html", status=status, items=ecosystems.all_ecosystems(db), edit=current,
+                      counts=counts, errors=errors or [])
+
+    async def ecosystems_save(request: Request):
+        form = await request.form()
+        eco = ecosystems.Ecosystem(
+            code=form.get("code") or "", display=form.get("display") or "",
+            canonical_base=form.get("canonical_base") or "", publisher=form.get("publisher") or None,
+            answer_options=form.get("answer_options") or "inline",
+            allowed_extensions=[x.strip() for x in (form.get("allowed_extensions") or "").replace(",", "\n").splitlines()
+                                if x.strip()],
+            default=bool(form.get("default")))
+        try:
+            ecosystems.save(db, eco)
+        except ecosystems.EcosystemError as exc:
+            return await ecosystems_page(request, [str(exc)], 400, edit=eco)
+        return redirect("/ekosystem", f"{eco.display} är sparat.")
+
+    async def ecosystems_json(request: Request):
+        codesystem, valueset = ecosystems.fhir_resources(db)
+        return JSONResponse({"resourceType": "Bundle", "type": "collection",
+                             "entry": [{"resource": codesystem}, {"resource": valueset}]})
 
     async def library_page(request: Request):
         return render(request, "valuesets.html", valuesets=db.valuesets())
@@ -332,6 +376,10 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         Route("/f/{fid}/bundle.json", bundle),
         Route("/f/{fid}/questionnaire.json", questionnaire_json),
         Route("/fil/{uid}", file),
+        Route("/f/{fid}/ekosystem", set_form_ecosystem, methods=["POST"]),
+        Route("/ekosystem", ecosystems_page, methods=["GET"]),
+        Route("/ekosystem", ecosystems_save, methods=["POST"]),
+        Route("/ekosystem/resurs", ecosystems_json),
         Route("/urval", library_page),
         Route("/urval/resurs", valueset_json),
         Route("/lardomar", guidelines_page),

@@ -12,6 +12,7 @@
   <a href="/">Formulär</a>
   <a href="/urval">Urvalsbibliotek</a>
   <a href="/lardomar">Lärdomar</a>
+  <a href="/ekosystem">Ekosystem</a>
   <span class="spacer"></span>
   <form method="get" action="/sok" role="search"><input type="search" name="q" placeholder="Sök formulär" aria-label="Sök formulär"></form>
   <form method="post" action="/namn" title="Ditt namn hamnar i versionshistoriken och i Provenance">
@@ -22,8 +23,6 @@
 <main>
   {% if not api_key %}<div class="notice">ANTHROPIC_API_KEY saknas – igenkänning, sökning och export fungerar, men inte AI-tolkning.
     Lägg nyckeln som miljövariabel (Codespaces-hemlighet) och starta om.</div>{% endif %}
-  {% if example_base %}<div class="notice small">Canonical-basen är en exempeladress ({{ cfg.canonical_base }}). Sätt
-    <span class="mono">FORM_CANONICAL_BASE</span> till organisationens adress innan formulär laddas upp i en riktig formulärtjänst.</div>{% endif %}
   {% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
   {% if errors %}<div class="errors"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
   {% block content %}{% endblock %}

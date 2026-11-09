@@ -1,6 +1,10 @@
 """Inställningar, från miljövariabler.
 
     FORM_DB                  SQLite-databasen (standard ./data/form-assistant.db)
+
+Följande fyra blir det förvalda formulärekosystemet "standard" när databasen skapas; därefter
+förvaltas ekosystemen i webbklienten (se ecosystems.py):
+
     FORM_CANONICAL_BASE      bas för canonical URL:er (Questionnaire, ValueSet, CodeSystem)
     FORM_PUBLISHER           utgivare i resurserna
     FORM_ALLOWED_EXTENSIONS  extensions som får användas, kommaseparerade (standard: inga)

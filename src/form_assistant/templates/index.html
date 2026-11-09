@@ -6,6 +6,9 @@
     <p>Ladda upp en eller några bilder av ett pappersformulär (en per sida), eller en PDF. Tjänsten känner först efter om
       formuläret redan finns och erbjuder i så fall en kopia. Annars tolkar Claude det till en FHIR Questionnaire.</p>
     <p><input type="file" name="files" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"></p>
+    <p><label class="small muted" for="ecosystem">Formulärekosystem – bestämmer canonical URL, utgivare och vilka extensions som får användas</label><br>
+      <select id="ecosystem" name="ecosystem">{% for e in ecosystems() %}<option value="{{ e.code }}" {{ 'selected' if e.default }}>{{ e.display }} – {{ e.canonical_base }}</option>{% endfor %}</select>
+      <a class="small" href="/ekosystem">Hantera</a></p>
     <p><label class="small muted" for="hint">Beskrivning (valfritt) – hjälper tolkningen och sökningen</label>
       <textarea id="hint" name="hint" placeholder="T.ex. Hälsodeklaration inför vaccination, fylls i av patienten"></textarea></p>
     <div class="row">

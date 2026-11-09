@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Formulärekosystem{% endblock %}
+{% block content %}
+<h1>Formulärekosystem</h1>
+<p class="muted">De formulärtjänster eller organisationer som formulären skapas för. Ekosystemet bestämmer canonical-basen för formulärets
+  och urvalens URL:er, utgivaren, hur svarsalternativen uttrycks och vilka extensions tjänsten stöder. Ekosystemen lagras som ett urval
+  (<a href="/ekosystem/resurs">FHIR: CodeSystem med egenskaper + ValueSet</a>). Det förvalda väljs för nya formulär.</p>
+<table>
+  <tr><th>Ekosystem</th><th>Canonical-bas</th><th>Svarsalternativ</th><th>Extensions</th><th>Formulär</th><th></th></tr>
+  {% for e in items %}
+  <tr><td><b>{{ e.display }}</b> <span class="mono muted">{{ e.code }}</span>{% if e.default %} <span class="badge ok">förvalt</span>{% endif %}
+      {% if e.publisher %}<div class="small muted">{{ e.publisher }}</div>{% endif %}</td>
+    <td class="mono">{{ e.canonical_base }}{% if e.example %} <span class="badge warn">exempeladress</span>{% endif %}</td>
+    <td>{{ 'answerOption' if e.answer_options == 'inline' else 'answerValueSet' }}</td>
+    <td class="small">{{ e.allowed_extensions|join(', ') or 'inga' }}</td>
+    <td>{{ counts.get(e.code, 0) }}</td>
+    <td><a href="/ekosystem?redigera={{ e.code }}">Ändra</a></td></tr>
+  {% endfor %}
+</table>
+
+<form method="post" action="/ekosystem" class="panel" style="margin-top:14px">
+  <h3>{{ 'Ändra ' ~ edit.display if edit and edit.code in (items|map(attribute='code')|list) else 'Nytt ekosystem' }}</h3>
+  <p class="row"><label>Kod<br><input type="text" name="code" value="{{ edit.code if edit else '' }}" placeholder="t.ex. inera" required></label>
+    <label>Namn<br><input type="text" name="display" value="{{ edit.display if edit else '' }}" placeholder="t.ex. Ineras formulärtjänst" required></label>
+    <label>Utgivare<br><input type="text" name="publisher" value="{{ edit.publisher or '' if edit else '' }}" placeholder="t.ex. Region Exempel"></label></p>
+  <p><label>Canonical-bas<br><input type="text" name="canonical_base" value="{{ edit.canonical_base if edit else '' }}" placeholder="https://fhir.region-exempel.se/formular" style="width:min(560px,100%)" required></label></p>
+  <p class="row"><label>Svarsalternativ<br><select name="answer_options">
+      <option value="inline" {{ 'selected' if not edit or edit.answer_options == 'inline' }}>i formuläret (answerOption) – mest kompatibelt</option>
+      <option value="valueset" {{ 'selected' if edit and edit.answer_options == 'valueset' }}>som urval (answerValueSet + ValueSet i bundlen)</option></select></label>
+    <label><input type="checkbox" name="default" {{ 'checked' if edit and edit.default }}> förvalt för nya formulär</label></p>
+  <p><label>Tillåtna extensions (en URL per rad)<br><textarea name="allowed_extensions" placeholder="http://hl7.org/fhir/StructureDefinition/regex">{{ edit.allowed_extensions|join('\n') if edit else '' }}</textarea></label></p>
+  <button type="submit">Spara</button> <a href="/ekosystem" class="small">Avbryt</a>
+</form>
+{% endblock %}

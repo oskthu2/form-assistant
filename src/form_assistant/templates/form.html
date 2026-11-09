@@ -44,6 +44,9 @@
     <span class="badge muted">version {{ row.number }}{{ '' if is_latest else ' (äldre)' }}</span>
   </div>
 </div>
+{% if ecosystem.example %}<div class="notice small">Ekosystemet {{ ecosystem.display }} har en exempeladress som canonical-bas
+  ({{ ecosystem.canonical_base }}). Välj eller <a href="/ekosystem?redigera={{ ecosystem.code }}">ange</a> organisationens adress innan formuläret
+  laddas upp i en riktig formulärtjänst.</div>{% endif %}
 {% if origin %}<p class="small muted">Kopia av <a href="/f/{{ origin.id }}">{{ origin.title }}</a> (derivedFrom).</p>{% endif %}
 {% if similar %}<div class="notice">Det här formuläret liknar {% for h in similar[:3] %}<a href="/f/{{ h.form_id }}">{{ h.title }}</a> ({{ h.reason }}){{ ', ' if not loop.last }}{% endfor %}.
   Överväg att utgå från det befintliga i stället.</div>{% endif %}
@@ -61,9 +64,14 @@
     </div>
     <div class="panel small">
       <h3>FHIR</h3>
+      <form method="post" action="/f/{{ form.id }}/ekosystem" class="row" style="margin-bottom:8px">
+        <label class="muted" for="eco">Ekosystem</label>
+        <select id="eco" name="ecosystem">{% for e in ecosystems() %}<option value="{{ e.code }}" {{ 'selected' if e.code == ecosystem.code }}>{{ e.display }}</option>{% endfor %}</select>
+        <button type="submit" class="secondary">Byt</button>
+      </form>
       <div class="mono">{{ q.url }}|{{ q.version }}</div>
-      <p class="muted">{{ 'answerOption i formuläret' if cfg.answer_options == 'inline' else 'answerValueSet + ValueSet/CodeSystem i bundlen' }} ·
-        {{ 'inga extensions' if not cfg.allowed_extensions else 'tillåtna extensions: ' ~ (cfg.allowed_extensions|join(', ')) }}</p>
+      <p class="muted">{{ 'answerOption i formuläret' if ecosystem.answer_options == 'inline' else 'answerValueSet + ValueSet/CodeSystem i bundlen' }} ·
+        {{ 'inga extensions' if not ecosystem.allowed_extensions else 'tillåtna extensions: ' ~ (ecosystem.allowed_extensions|join(', ')) }}</p>
       {% if build.extensions_skipped %}<p class="muted">Utelämnade extensions (inte i vitlistan): {{ build.extensions_skipped|join(', ') }}</p>{% endif %}
       <div class="row">
         <a class="button" href="/f/{{ form.id }}/bundle.json{{ '' if is_latest else '?v=' ~ row.number }}">Ladda ner Bundle</a>
