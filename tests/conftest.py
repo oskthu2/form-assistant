@@ -92,6 +92,9 @@ class FakeClaude:
         body = json.loads(request.content)
         self.requests.append(body | {"_headers": dict(request.headers)})
         payload = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        if isinstance(payload, dict) and "_status" in payload:
+            return httpx2.Response(payload["_status"], json={"type": "error", "error": {
+                "type": "invalid_request_error", "message": payload["message"]}})
         stop = "end_turn"
         if isinstance(payload, tuple):
             payload, stop = payload

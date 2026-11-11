@@ -27,8 +27,9 @@ def app(tmp_path):
     cfg = Config(db_path=tmp_path / "db.sqlite", canonical_base="https://fhir.region-exempel.se/formular",
                  publisher="Region Exempel")
     db = Database(cfg.db_path)
-    revised = draft_dict()
-    revised["items"][6]["required"] = True                  # "Gör fråga 3 obligatorisk"
+    allergi = {k: v for k, v in draft_dict()["items"][6].items() if v not in (None, [], False)}
+    revised = {"header": [], "remove": [], "notes": ["Fråga 4 var delvis oläslig."],   # "Gör fråga 3 obligatorisk"
+               "changes": [{"action": "ändra", "after": "", "item": allergi | {"required": True}}]}
     claude = FakeClaude(draft_dict(), revised,
                         {"guidelines": [{"text": "Flervalsfrågor som gäller hälsa är oftast obligatoriska.",
                                          "rationale": "Rättat vid iteration."}]})
@@ -57,7 +58,7 @@ def test_full_flow(app):
     allergi = next(i for g in q["item"] for i in g.get("item", []) if i["linkId"] == "allergi")
     assert allergi["required"] is True
     assert "Gör fråga 3 obligatorisk" in claude.requests[1]["messages"][0]["content"][-1]["text"]
-    assert any(b["type"] == "image" for b in claude.requests[1]["messages"][0]["content"])   # originalet följer med
+    assert not any(b["type"] == "image" for b in claude.requests[1]["messages"][0]["content"])  # bara på begäran
 
     client.cookies.delete("anvandare")
     assert client.post(f"/f/{fid}/godkann").status_code == 401             # arbetsytan kräver inloggning

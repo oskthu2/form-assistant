@@ -47,6 +47,7 @@
     {% if meta.model %}<div class="panel small"><h3>AI-proveniens</h3>
       <div>Modell: <b>{{ meta.model }}</b></div>
       {% if meta.usage %}<div class="muted">{{ meta.usage.input_tokens }} in, {{ meta.usage.output_tokens }} ut{% if meta.usage.cache_read_input_tokens %}, {{ meta.usage.cache_read_input_tokens }} ur cache{% endif %}</div>{% endif %}
+      {% if meta.underlag %}<div class="muted">Underlag: {{ meta.underlag|join('; ') }}{% if meta.originalfiler is defined and not meta.originalfiler %} – originalfilerna skickades inte med{% endif %}</div>{% endif %}
       <div class="muted">Författarskapet följer med som Provenance i bundlen.</div></div>{% endif %}
   </aside>
 
@@ -63,6 +64,7 @@
     <form method="post" action="/f/{{ form.id }}/revidera" class="panel" data-busy>
       <h3>Iterera med AI:n</h3>
       <textarea name="instruction" placeholder="T.ex. ”Gör fråga 3 obligatorisk”, ”Dela upp adressen i gatuadress, postnummer och ort”, ”Flera allergier ska kunna väljas”"></textarea>
+      <label class="small"><input type="checkbox" name="original" value="1"> Skicka med originalfilerna – behövs när AI:n ska titta på formuläret igen (t.ex. en fråga som saknas), men kostar mer. Annars används beskrivningen och PDF:ernas text.</label>
       <div class="row" style="margin-top:8px">
         <button type="submit" {{ '' if api_key else 'disabled' }}>Revidera</button>
         <span class="spinner muted">Claude reviderar …</span>

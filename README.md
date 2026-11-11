@@ -40,6 +40,8 @@ pytest -q
 |---|---|
 | `FORM_DB` | SQLite-databasen (standard `data/form-assistant.db`) |
 | `FORM_MODEL` | Claude-modell (standard `claude-opus-5-5`) |
+| `FORM_PDF_INPUT` | hur en PDF med textlager skickas: `dokument` (standard), `text` eller `text-bild` – se *Tokens* nedan |
+| `FORM_IMAGE_EDGE` | bilder och inskannade sidor skalas ned till så många pixlar på längsta sidan (standard 1600) |
 | `FORM_CANONICAL_BASE`, `FORM_PUBLISHER`, `FORM_ALLOWED_EXTENSIONS`, `FORM_ANSWER_OPTIONS` | värden för det förvalda formulärekosystemet "standard", som skapas första gången (se nedan). Därefter förvaltas ekosystemen i webbklienten |
 
 ## Två lägen
@@ -214,16 +216,48 @@ sätt:
 - **Exempel.** Godkända formulär som liknar det nya, efter beskrivningen eller de senast godkända,
   skickas med som exempel.
 
-Systemprompten och de uppladdade filerna cachas (prompt caching), så att en revidering av samma
-formulär läser bilderna ur cachen. Server-side fallback är påslaget: om modellen avböjer en
-begäran tar en annan modell över i samma anrop.
+Systemprompten och underlaget cachas (prompt caching). Server-side fallback är påslaget: om
+modellen avböjer en begäran tar en annan modell över i samma anrop.
+
+## Tokens
+
+Underlaget och svaret kostar ungefär lika mycket, så båda hålls nere:
+
+- **PDF-läge (`FORM_PDF_INPUT`).** Som dokument (`dokument`, standard) räknas varje sida både som
+  text och som bild. `text` skickar bara textlagret, som appen själv läser ut. En 17-sidig
+  hälsodeklaration blir då cirka 16 000 tecken, en bråkdel av vad hela dokumentet kostar, men
+  kryssrutor och layout syns inte. `text-bild` skickar textlagret plus en liten bild av varje sida
+  (cirka 1 100 tokens per A4-sida), så att AI:n ser om alternativen är radioknappar eller
+  kryssrutor. Jämför lägena på några av era formulär innan ni byter standard.
+- **Inskannade sidor** (utan textlager) gör appen själv om till bilder i lagom upplösning, i alla
+  lägen.
+- **Bilder** skalas ned till `FORM_IMAGE_EDGE` pixlar (standard 1600). Ett A4-foto kostar då cirka
+  2 400 tokens i stället för cirka 3 700 vid 2 000 pixlar.
+- **Revideringar** skickar utkastet och PDF:ernas textlager, inte originalfilerna. Kryssa i
+  *Skicka med originalfilerna* när AI:n behöver titta på formuläret igen, t.ex. för en fråga som
+  saknas. AI:n skriver bara ändringarna (ändrade, tillagda och borttagna frågor), inte hela
+  formuläret.
+- **Kompakt svar.** AI:n utelämnar fält som har standardvärdet (`false`, tomma listor, inget
+  värde). Schemat håller sig under API:ets gränser för strukturerad output; om API:et ändå skulle
+  avvisa det används det fullständiga schemat automatiskt.
+
+Varje AI-version sparar tokenförbrukning och underlag i härkomsten (visas under *AI-proveniens* på
+formulärsidan). Så här jämför du:
+
+```
+sqlite3 data/form-assistant.db "select kind, json_extract(provenance,'$.underlag'),
+  json_extract(provenance,'$.usage.input_tokens'), json_extract(provenance,'$.usage.output_tokens'),
+  json_extract(provenance,'$.usage.cache_read_input_tokens') from revisions
+  where provenance is not null order by created desc limit 20"
+```
 
 ## Struktur
 
 ```
 src/form_assistant/
-  model.py      formulärutkastet (pydantic) – schema för Claude och lagring
+  model.py      formulärutkastet (pydantic), Claudes kompakta svarsformat och revideringar som ändringar
   ai.py         tolkning, revidering och förslag på lärdomar (Claude, strukturerad output)
+  underlag.py   bilder och PDF som innehållsblock: nedskalning, PDF-läge, inskannade sidor
   fhir.py       utkast -> Questionnaire, ValueSet/CodeSystem, Provenance, Bundle
   valuesets.py  urvalsbiblioteket: jämförelse, förslag, sparande
   ecosystems.py formulärekosystemen (lagras som ett urval)

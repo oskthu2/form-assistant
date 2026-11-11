@@ -302,7 +302,9 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
 
     async def revise(request: Request):
         fid = request.path_params["fid"]
-        instruction = ((await request.form()).get("instruction") or "").strip()[:4000]
+        form = await request.form()
+        instruction = (form.get("instruction") or "").strip()[:4000]
+        with_files = form.get("original") == "1"
         if not instruction:
             return redirect(f"/f/{fid}", "Skriv vad som ska ändras.")
         if db.form(fid) is None:
@@ -310,7 +312,7 @@ def create_app(cfg: Config | None = None, db: Database | None = None, ai_client_
         author = user(request)
 
         async def work(progress):
-            number = await service.revise_form(db, cfg, client(), fid, instruction, author, progress)
+            number = await service.revise_form(db, cfg, client(), fid, instruction, author, progress, with_files)
             return f"/f/{fid}?" + urlencode({"msg": f"Version {number} är klar."})
         return start_job("revidering", request, work, fid)
 

@@ -93,11 +93,12 @@ async def create_form(db: Database, cfg: Config, client, upload_ids: list[str], 
 
 
 async def revise_form(db: Database, cfg: Config, client, form_id: str, instruction: str, author: str,
-                      progress=None) -> int:
+                      progress=None, with_files: bool = False) -> int:
+    """Revidera med AI. Originalfilerna skickas bara med när ``with_files`` är satt (annars PDF:ernas textlager)."""
     draft = _draft(db, form_id)
     uploads = uploads_with_data(db, [u["id"] for u in db.form_uploads(form_id)])
     revised, meta = await ai.revise(client, cfg, uploads, db.valuesets(), guideline_texts(db), draft, instruction,
-                                    progress)
+                                    progress, with_files)
     fingerprint, text = _index(revised)
     return db.add_revision(form_id, revised, author, "ai-revidering", instruction.strip(), provenance=meta,
                            fingerprint=fingerprint, search_text=text)
